@@ -1,0 +1,24 @@
+# 環境設定ファイル（機密情報を含む）
+.env
+
+# Python仮想環境
+env/
+venv/
+.venv/
+
+# Pythonキャッシュ
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# SQLiteデータベース
+*.db
+
+# IDE設定
+.vscode/
+.idea/
+
+# OS生成ファイル
+.DS_Store
+Thumbs.db
