@@ -1,0 +1,19 @@
+{
+    "$schema": "https://openapi.vercel.sh/vercel.json",
+    "buildCommand": "npm run build",
+    "devCommand": "npm run dev",
+    "installCommand": "npm install",
+    "framework": "nextjs",
+    "regions": [
+        "hnd1"
+    ],
+    "env": {
+        "NEXT_PUBLIC_API_BASE": "@next_public_api_base"
+    },
+    "rewrites": [
+        {
+            "source": "/api/:path*",
+            "destination": "https://zaikokanri-backend.onrender.com/:path*"
+        }
+    ]
+}

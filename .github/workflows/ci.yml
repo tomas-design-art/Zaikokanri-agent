@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main, staging, develop]
+  pull_request:
+    branches: [main, staging, develop]
+
+jobs:
+  backend:
+    name: Backend (ruff / pytest / pip-audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff (lint)
+        run: ruff check app tests
+
+      - name: Pytest
+        env:
+          JWT_SECRET: ci-test-secret
+          DATABASE_URL: sqlite:///./ci_test.db
+          RATE_LIMIT_LOGIN: 10000/minute
+        run: pytest -W ignore::DeprecationWarning
+
+      - name: pip-audit (deps vuln scan)
+        continue-on-error: true
+        run: pip-audit --strict --skip-editable || true
+
+  frontend:
+    name: Frontend (typecheck / lint / build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci || npm install
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint --silent || true
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_API_BASE: http://localhost:8000
+        run: npm run build
+
+      - name: npm audit (prod deps)
+        continue-on-error: true
+        run: npm audit --omit=dev || true
+
+  secrets-scan:
+    name: Gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

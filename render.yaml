@@ -1,0 +1,49 @@
+# Render Blueprint - zaikokanri 在庫管理システム
+# https://render.com/docs/blueprint-spec
+#
+# 使い方:
+#   1. GitHub と連携
+#   2. Render Dashboard > New > Blueprint
+#   3. このリポジトリを選択
+#   4. 環境変数 (JWT_SECRET / OPENAI_API_KEY 等) を Render 側で設定
+
+services:
+  - type: web
+    name: zaikokanri-backend
+    env: docker
+    plan: starter
+    region: singapore
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: COOKIE_SAMESITE
+        value: none
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zaikokanri-db
+          property: connectionString
+      - key: CORS_ORIGINS
+        sync: false   # Vercel デプロイ後の URL を手動設定
+      - key: AI_ENABLED
+        value: "false"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RATE_LIMIT_LOGIN
+        value: 5/minute
+      - key: LOG_LEVEL
+        value: INFO
+
+databases:
+  - name: zaikokanri-db
+    plan: starter
+    region: singapore
+    postgresMajorVersion: 15
