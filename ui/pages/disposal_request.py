@@ -49,10 +49,15 @@ def show_disposal_request_page():
     current_user = get_current_user()
     user_id = current_user.get("id")
 
-    # タブ: 新規申請 / 申請履歴
-    tab1, tab2 = st.tabs(["📝 新規申請", "📋 申請履歴"])
+    # セクション切替（rerun時も保持）
+    section = st.radio(
+        "表示セクション",
+        options=["📝 新規申請", "📋 申請履歴"],
+        horizontal=True,
+        key="disposal_request_section",
+    )
 
-    with tab1:
+    if section == "📝 新規申請":
         st.subheader("📝 新規廃棄申請")
         st.caption("期限切れや破損した薬品・造影剤などを廃棄申請します")
 
@@ -257,7 +262,7 @@ def show_disposal_request_page():
                     except Exception as e:
                         st.error(f"❌ エラーが発生しました: {e}")
 
-    with tab2:
+    if section == "📋 申請履歴":
         st.subheader("📋 申請履歴")
 
         # 自分の申請を取得

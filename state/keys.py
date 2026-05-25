@@ -121,6 +121,17 @@ class K:
     # ─── デモモード ───
     DEMO_RESET_CONFIRM = "demo_reset_confirm"
 
+    # ─── 棚卸し ───
+    STOCKTAKE_SESSION = "stocktake_session"
+    STOCKTAKE_FILTER_STATUS = "stocktake_filter_status"
+    STOCKTAKE_FILTER_CATEGORY = "stocktake_filter_category"
+    STOCKTAKE_FILTER_DEPARTMENT = "stocktake_filter_department"
+    STOCKTAKE_FILTER_SEARCH = "stocktake_filter_search"
+    STOCKTAKE_EDIT_BUFFER = "stocktake_edit_buffer"
+    STOCKTAKE_SELECTED_IDS = "stocktake_selected_ids"
+    STOCKTAKE_SUCCESS_MSG = "stocktake_success_msg"
+    STOCKTAKE_ERROR_MSG = "stocktake_error_msg"
+
     # ─── 動的キー生成ヘルパー ───
     @staticmethod
     def confirm_undo_out(history_id: int) -> str:

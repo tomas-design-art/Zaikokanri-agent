@@ -2,74 +2,48 @@
 ルーターモジュール
 
 メニューIDに基づいて適切なページ関数にルーティングする。
+新規ページを追加する場合は PAGE_REGISTRY に1行追加するだけ。
 """
 
 import streamlit as st
 
+# (モジュールパス, 関数名) のマッピング
+# 遅延インポートにより起動時間を短縮し、循環インポートを回避
+PAGE_REGISTRY: dict[str, tuple[str, str]] = {
+    "inventory":          ("ui.pages.inventory",                           "show_inventory_page"),
+    "alert":              ("ui.pages.alert",                               "show_alert_page"),
+    "purchase_request":   ("ui.pages.purchase_request",                    "show_purchase_request_page"),
+    "disposal_request":   ("ui.pages.disposal_request",                    "show_disposal_request_page"),
+    "inbound":            ("ui.pages.inbound",                             "show_inbound_page"),
+    "outbound":           ("ui.pages.outbound",                            "show_outbound_page"),
+    "history":            ("ui.pages.history",                             "show_history_page"),
+    "stats":              ("ui.pages.statistics",                          "show_statistics_page"),
+    "ai":                 ("ui.pages.ai_assistant",                        "show_ai_assistant_page"),
+    "approval":           ("ui.pages.approval",                            "show_approval_page"),
+    "disposal_approval":  ("ui.pages.disposal_approval",                   "show_disposal_approval_page"),
+    "purchase_admin":     ("ui.pages.purchase_admin",                      "show_purchase_request_admin_page"),
+    "adjust":             ("ui.pages.adjust",                              "show_adjust_page"),
+    "item_master":        ("ui.pages.item_master",                         "show_item_master_management_page"),
+    "vendor":             ("ui.pages.vendor",                              "show_vendor_management_page"),
+    "users":              ("ui.pages.users",                               "show_user_management_page"),
+    "departments":        ("ui.pages.departments",                         "show_department_management_page"),
+    "maintenance":        ("ui.pages.maintenance",                         "show_maintenance_page"),
+    "demo":               ("ui.pages.demo",                                "show_demo_mode_page"),
+    "stocktake_sessions": ("ui.pages.stocktake.stocktake_sessions_page",   "show_stocktake_sessions_page"),
+    "stocktake_entry":    ("ui.pages.stocktake.stocktake_entry_page",      "show_stocktake_entry_page"),
+    "stocktake_review":   ("ui.pages.stocktake.stocktake_review_page",     "show_stocktake_review_page"),
+    "stocktake_report":   ("ui.pages.stocktake.stocktake_report_page",     "show_stocktake_report_page"),
+    "stocktake_admin":    ("ui.pages.stocktake.stocktake_admin_page",      "show_stocktake_admin_page"),
+}
+
 
 def route(menu_id: str):
-    """
-    メニューIDに対応するページを表示する。
-    
-    遅延インポートを使用してページモジュールを読み込むことで、
-    起動時間を短縮し、循環インポートを回避する。
-    """
-    if menu_id == "inventory":
-        from ui.pages.inventory import show_inventory_page
-        show_inventory_page()
-    elif menu_id == "alert":
-        from ui.pages.alert import show_alert_page
-        show_alert_page()
-    elif menu_id == "purchase_request":
-        from ui.pages.purchase_request import show_purchase_request_page
-        show_purchase_request_page()
-    elif menu_id == "disposal_request":
-        from ui.pages.disposal_request import show_disposal_request_page
-        show_disposal_request_page()
-    elif menu_id == "inbound":
-        from ui.pages.inbound import show_inbound_page
-        show_inbound_page()
-    elif menu_id == "outbound":
-        from ui.pages.outbound import show_outbound_page
-        show_outbound_page()
-    elif menu_id == "history":
-        from ui.pages.history import show_history_page
-        show_history_page()
-    elif menu_id == "stats":
-        from ui.pages.statistics import show_statistics_page
-        show_statistics_page()
-    elif menu_id == "ai":
-        from ui.pages.ai_assistant import show_ai_assistant_page
-        show_ai_assistant_page()
-    elif menu_id == "approval":
-        from ui.pages.approval import show_approval_page
-        show_approval_page()
-    elif menu_id == "disposal_approval":
-        from ui.pages.disposal_approval import show_disposal_approval_page
-        show_disposal_approval_page()
-    elif menu_id == "purchase_admin":
-        from ui.pages.purchase_admin import show_purchase_request_admin_page
-        show_purchase_request_admin_page()
-    elif menu_id == "adjust":
-        from ui.pages.adjust import show_adjust_page
-        show_adjust_page()
-    elif menu_id == "item_master":
-        from ui.pages.item_master import show_item_master_management_page
-        show_item_master_management_page()
-    elif menu_id == "vendor":
-        from ui.pages.vendor import show_vendor_management_page
-        show_vendor_management_page()
-    elif menu_id == "users":
-        from ui.pages.users import show_user_management_page
-        show_user_management_page()
-    elif menu_id == "departments":
-        from ui.pages.departments import show_department_management_page
-        show_department_management_page()
-    elif menu_id == "maintenance":
-        from ui.pages.maintenance import show_maintenance_page
-        show_maintenance_page()
-    elif menu_id == "demo":
-        from ui.pages.demo import show_demo_mode_page
-        show_demo_mode_page()
+    """メニューIDに対応するページを表示する。"""
+    entry = PAGE_REGISTRY.get(menu_id)
+    if entry:
+        import importlib
+        module_path, func_name = entry
+        module = importlib.import_module(module_path)
+        getattr(module, func_name)()
     else:
         st.info(f"機能 {menu_id} は実装準備中です")

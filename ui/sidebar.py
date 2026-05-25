@@ -70,11 +70,21 @@ def build_menu_items(ai_enabled: bool) -> list:
         if can_adjust():
             menu_items.append(("adjust", "🔧 在庫調整"))
 
+        # 棚卸し（一般ユーザー用 - 入力とレポート）
+        if not is_admin():
+            menu_items.append(("stocktake_entry", "📝 棚卸し入力"))
+            menu_items.append(("stocktake_report", "📊 棚卸しレポート"))
+
         if is_admin():
             menu_items.append(("item_master", "📦 物品マスター管理"))
             menu_items.append(("vendor", "🏢 業者管理"))
             menu_items.append(("users", "👥 ユーザー管理"))
             menu_items.append(("departments", "🏢 部署管理"))
+            menu_items.append(("stocktake_sessions", "📋 棚卸しセッション"))
+            menu_items.append(("stocktake_entry", "📝 棚卸し入力"))
+            menu_items.append(("stocktake_review", "✅ 棚卸し確認・承認"))
+            menu_items.append(("stocktake_report", "📊 棚卸しレポート"))
+            menu_items.append(("stocktake_admin", "⚙️ 棚卸し管理"))
             menu_items.append(("maintenance", "🛠️ メンテナンス"))
             menu_items.append(("demo", "🎭 デモモード"))
 
@@ -128,7 +138,12 @@ def migrate_legacy_menu():
         "👥 ユーザー管理": "users",
         "🏢 部署管理": "departments",
         "🛠️ メンテナンス": "maintenance",
-        "🎭 デモモード": "demo"
+        "🎭 デモモード": "demo",
+        "📋 棚卸しセッション": "stocktake_sessions",
+        "📝 棚卸し入力": "stocktake_entry",
+        "✅ 棚卸し確認・承認": "stocktake_review",
+        "📊 棚卸しレポート": "stocktake_report",
+        "⚙️ 棚卸し管理": "stocktake_admin",
     }
     current_menu = st.session_state.get("menu")
     if current_menu and current_menu in legacy_map:

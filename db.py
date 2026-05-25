@@ -9,17 +9,10 @@ import hashlib
 import secrets
 import bcrypt
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from typing import Optional
 from contextlib import contextmanager
 from collections import Counter
-
-# JST ZoneInfo
-JST = ZoneInfo("Asia/Tokyo")
-
-def get_jst_now_str() -> str:
-    """現在の日じ（JST）を文字列 'YYYY-MM-DD HH:MM:SS' で取得"""
-    return datetime.now(JST).strftime('%Y-%m-%d %H:%M:%S')
+from utils.date_utils import JST, get_jst_now_str  # noqa: F401 (再エクスポート用)
 
 # =============================================================================
 # パスワードハッシュ関連
@@ -538,6 +531,110 @@ def init_tables():
             CREATE INDEX IF NOT EXISTS idx_candidates_item 
             ON purchase_candidates(item_id)
         """)
+        
+        # =================================================================
+        # 棚卸しセッションテーブル
+        # =================================================================
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stocktake_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT,
+                status TEXT DEFAULT 'OPEN',
+                note TEXT,
+                created_by INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                closed_at TEXT,
+                FOREIGN KEY (created_by) REFERENCES users(id)
+            )
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stocktake_sessions_status 
+            ON stocktake_sessions(status)
+        """)
+        
+        # =================================================================
+        # 棚卸し記録テーブル
+        # =================================================================
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stocktake_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                item_id INTEGER NOT NULL,
+                system_qty INTEGER DEFAULT 0,
+                actual_qty INTEGER,
+                diff_qty INTEGER DEFAULT 0,
+                counted_by INTEGER,
+                counted_at TEXT,
+                verified_by INTEGER,
+                verified_at TEXT,
+                approved_by INTEGER,
+                approved_at TEXT,
+                note TEXT,
+                status TEXT DEFAULT 'PENDING',
+                FOREIGN KEY (session_id) REFERENCES stocktake_sessions(id),
+                FOREIGN KEY (item_id) REFERENCES items(id),
+                FOREIGN KEY (counted_by) REFERENCES users(id),
+                FOREIGN KEY (verified_by) REFERENCES users(id),
+                FOREIGN KEY (approved_by) REFERENCES users(id),
+                UNIQUE(session_id, item_id)
+            )
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stocktake_records_session 
+            ON stocktake_records(session_id)
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stocktake_records_status 
+            ON stocktake_records(status)
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stocktake_records_item 
+            ON stocktake_records(item_id)
+        """)
+        
+        # =================================================================
+        # 棚卸しテンプレートテーブル
+        # =================================================================
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stocktake_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                description TEXT,
+                file_type TEXT DEFAULT 'excel',
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # =================================================================
+        # 棚卸しテンプレートマッピングテーブル
+        # =================================================================
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stocktake_template_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                field_name TEXT NOT NULL,
+                excel_cell TEXT NOT NULL,
+                display_label TEXT,
+                sort_order INTEGER DEFAULT 0,
+                FOREIGN KEY (template_id) REFERENCES stocktake_templates(id),
+                UNIQUE(template_id, field_name)
+            )
+        """)
+        
+        # itemsテーブルに棚卸し対象フラグを追加（存在しない場合のみ）
+        cursor.execute("PRAGMA table_info(items)")
+        item_cols = [col[1] for col in cursor.fetchall()]
+        if 'is_inventory_target' not in item_cols:
+            cursor.execute("ALTER TABLE items ADD COLUMN is_inventory_target INTEGER DEFAULT 1")
+            print("✅ itemsテーブルにis_inventory_targetカラムを追加しました")
         
         conn.commit()
         print("✅ テーブルとインデックスを作成しました")
@@ -2513,7 +2610,7 @@ def update_item(item_id: int, item_name: str, category: str, item_code: str = No
                department_tags: str = None, unit_price: float = 0,
                is_asset: int = 0, frequency_tag: str = None,
                expiry_date: str = None, owner_department_id: int = None,
-               is_common: int = 0) -> dict:
+               is_common: int = 0, is_inventory_target: int = 1) -> dict:
     """
     物品情報を更新
     
@@ -2557,11 +2654,13 @@ def update_item(item_id: int, item_name: str, category: str, item_code: str = No
                     item_name = ?, item_code = ?, vendor_name = ?, vendor_item_code = ?,
                     category = ?, department_tags = ?, unit_price = ?, is_asset = ?,
                     frequency_tag = ?, expiry_date = ?, owner_department_id = ?, is_common = ?,
+                    is_inventory_target = ?,
                     updated_at = datetime('now', '+09:00')
                 WHERE id = ?
             """, (item_name, item_code, vendor_name, vendor_item_code,
                   category, department_tags, unit_price, is_asset,
-                  frequency_tag, expiry_date, owner_department_id, is_common, item_id))
+                  frequency_tag, expiry_date, owner_department_id, is_common,
+                  is_inventory_target, item_id))
             
             conn.commit()
             
@@ -3199,7 +3298,7 @@ def insert_demo_data() -> dict:
             
             # 期限設定用の日付計算
             from datetime import datetime, timedelta
-            today = datetime.now(ZoneInfo('Asia/Tokyo'))
+            today = datetime.now(JST)
             
             items_data = [
                 # item_code, item_name, category, vendor_name, reorder_point, expiry_date, department_tags
@@ -3327,18 +3426,247 @@ def insert_demo_data() -> dict:
             
             # 8. 承認待ち（スキップ - approval_queueテーブルが存在しない場合）
             print("✋ 承認待ちをスキップ（テーブルが存在しない可能性）")
-            # try:
-            #     for i, item_code in enumerate(list(item_map.keys())[:3]):
-            #         item_id = item_map[item_code]
-            #         cursor.execute("""
-            #             INSERT INTO approval_queue 
-            #             (item_id, action, quantity, requester_id, notes, created_at)
-            #             VALUES (?, '出庫', ?, ?, ?, datetime('now', ?))
-            #         """, (item_id, 3, demo_user_id, f"デモ承認待ち{i+1}", f"-{i} hours"))
-            #         counts["approvals"] += 1
-            # except Exception as e:
-            #     print(f"❌ 承認待ち投入エラー: {e}")
-            #     raise
+            
+            # 9. 棚卸し対象フラグの設定
+            print("🏷️ 棚卸し対象フラグを設定中...")
+            try:
+                # 文房具・消耗品は棚卸し非対象（安価な日用品・事務用品）
+                non_target_codes = ["P001", "P002", "P003", "P004",
+                                    "C001", "C002", "C003", "C004"]
+                for code in non_target_codes:
+                    cursor.execute(
+                        "UPDATE items SET is_inventory_target = 0 WHERE item_code = ?",
+                        (code,)
+                    )
+                print(f"  ✓ {len(non_target_codes)}件を棚卸し非対象に設定")
+            except Exception as e:
+                print(f"❌ 棚卸し対象フラグ設定エラー: {e}")
+                raise
+            
+            # 10. 棚卸しデモデータ
+            print("📋 棚卸しデモデータを投入中...")
+            counts["stocktake_sessions"] = 0
+            counts["stocktake_records"] = 0
+            try:
+                # 既存セッションチェック
+                cursor.execute(
+                    "SELECT id FROM stocktake_sessions WHERE name = ?",
+                    ("2026年3月定期棚卸し",)
+                )
+                existing_session = cursor.fetchone()
+                
+                if not existing_session:
+                    # セッション作成
+                    now_str = get_jst_now_str()
+                    cursor.execute("""
+                        INSERT INTO stocktake_sessions
+                        (name, start_date, end_date, status, note, created_by, created_at)
+                        VALUES (?, ?, ?, 'OPEN', ?, ?, ?)
+                    """, (
+                        "2026年3月定期棚卸し",
+                        "2026-03-01",
+                        "2026-03-15",
+                        "デモ用棚卸しセッション。医薬品・電子機器・家具・工具が対象です。",
+                        1,  # admin user
+                        now_str,
+                    ))
+                    session_id = cursor.lastrowid
+                    counts["stocktake_sessions"] = 1
+                    print(f"  ✓ 棚卸しセッション作成 (ID={session_id})")
+                    
+                    # 棚卸し対象物品のレコードを生成
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO stocktake_records
+                        (session_id, item_id, system_qty, status)
+                        SELECT ?, i.id, COALESCE(inv.quantity, 0), 'PENDING'
+                        FROM items i
+                        LEFT JOIN inventory inv ON i.id = inv.item_id
+                        WHERE i.is_active = 1
+                          AND COALESCE(i.is_inventory_target, 1) = 1
+                    """, (session_id,))
+                    record_count_val = cursor.rowcount
+                    counts["stocktake_records"] = record_count_val
+                    print(f"  ✓ {record_count_val}件の棚卸しレコードを生成")
+                    
+                    # ユーザーIDを取得
+                    cursor.execute("SELECT id FROM users WHERE username = 'admin' LIMIT 1")
+                    admin_row = cursor.fetchone()
+                    admin_id = admin_row["id"] if admin_row else 1
+                    
+                    cursor.execute("SELECT id FROM users WHERE username = 'tanaka' LIMIT 1")
+                    tanaka_row = cursor.fetchone()
+                    tanaka_id = tanaka_row["id"] if tanaka_row else 2
+                    
+                    cursor.execute("SELECT id FROM users WHERE username = 'suzuki' LIMIT 1")
+                    suzuki_row = cursor.fetchone()
+                    suzuki_id = suzuki_row["id"] if suzuki_row else 3
+                    
+                    # 棚卸しレコードに多様なステータスを設定
+                    # レコードを取得
+                    cursor.execute("""
+                        SELECT sr.id, sr.item_id, sr.system_qty, i.item_code, i.category
+                        FROM stocktake_records sr
+                        JOIN items i ON sr.item_id = i.id
+                        WHERE sr.session_id = ?
+                        ORDER BY i.item_code
+                    """, (session_id,))
+                    st_records = [dict(row) for row in cursor.fetchall()]
+                    
+                    for rec in st_records:
+                        code = rec["item_code"]
+                        sys_qty = rec["system_qty"]
+                        rec_id = rec["id"]
+                        
+                        # 医薬品: 差異ありCOUNTED（不足・過剰混在）
+                        if code == "M001":
+                            # 造影剤: 不足2個 → COUNTED
+                            actual = max(0, sys_qty - 2)
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = ?, status = 'COUNTED',
+                                    counted_by = ?, counted_at = ?, note = ?
+                                WHERE id = ?
+                            """, (actual, actual - sys_qty, tanaka_id, now_str,
+                                  "使用済み分が未記録の可能性", rec_id))
+                        
+                        elif code == "M002":
+                            # 消毒用エタノール: 一致 → VERIFIED
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = 0, status = 'VERIFIED',
+                                    counted_by = ?, counted_at = ?,
+                                    verified_by = ?, verified_at = ?
+                                WHERE id = ?
+                            """, (sys_qty, suzuki_id, now_str,
+                                  admin_id, now_str, rec_id))
+                        
+                        elif code == "M003":
+                            # 滅菌ガーゼ: 過剰3個 → APPROVED
+                            actual = sys_qty + 3
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = ?, status = 'APPROVED',
+                                    counted_by = ?, counted_at = ?,
+                                    verified_by = ?, verified_at = ?,
+                                    approved_by = ?, approved_at = ?,
+                                    note = ?
+                                WHERE id = ?
+                            """, (actual, actual - sys_qty, tanaka_id, now_str,
+                                  admin_id, now_str, admin_id, now_str,
+                                  "納品時の数量誤り", rec_id))
+                        
+                        elif code == "M004":
+                            # 注射器: 一致 → COUNTED
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = 0, status = 'COUNTED',
+                                    counted_by = ?, counted_at = ?
+                                WHERE id = ?
+                            """, (sys_qty, suzuki_id, now_str, rec_id))
+                        
+                        # 電子機器: 一部入力済み
+                        elif code == "E001":
+                            # USBメモリ: 不足1個 → COUNTED
+                            actual = max(0, sys_qty - 1)
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = ?, status = 'COUNTED',
+                                    counted_by = ?, counted_at = ?,
+                                    note = ?
+                                WHERE id = ?
+                            """, (actual, actual - sys_qty, tanaka_id, now_str,
+                                  "紛失の可能性あり", rec_id))
+                        
+                        elif code == "E002":
+                            # HDMIケーブル: 一致 → VERIFIED
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = 0, status = 'VERIFIED',
+                                    counted_by = ?, counted_at = ?,
+                                    verified_by = ?, verified_at = ?
+                                WHERE id = ?
+                            """, (sys_qty, tanaka_id, now_str,
+                                  admin_id, now_str, rec_id))
+                        
+                        # E003, E004 は PENDING のまま（未入力）
+                        
+                        # 家具: 全て入力済み
+                        elif code == "F001":
+                            # オフィスチェア: 一致 → APPROVED
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = 0, status = 'APPROVED',
+                                    counted_by = ?, counted_at = ?,
+                                    verified_by = ?, verified_at = ?,
+                                    approved_by = ?, approved_at = ?
+                                WHERE id = ?
+                            """, (sys_qty, suzuki_id, now_str,
+                                  admin_id, now_str, admin_id, now_str, rec_id))
+                        
+                        elif code == "F002":
+                            # デスク: 過剰1台 → VERIFIED
+                            actual = sys_qty + 1
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = ?, status = 'VERIFIED',
+                                    counted_by = ?, counted_at = ?,
+                                    verified_by = ?, verified_at = ?,
+                                    note = ?
+                                WHERE id = ?
+                            """, (actual, actual - sys_qty, suzuki_id, now_str,
+                                  admin_id, now_str, "未登録のデスクが1台あり", rec_id))
+                        
+                        elif code == "F003":
+                            # 書棚: 一致 → COUNTED
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = 0, status = 'COUNTED',
+                                    counted_by = ?, counted_at = ?
+                                WHERE id = ?
+                            """, (sys_qty, suzuki_id, now_str, rec_id))
+                        
+                        elif code == "F004":
+                            # ホワイトボード: 不足1台 → COUNTED
+                            actual = max(0, sys_qty - 1)
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = ?, status = 'COUNTED',
+                                    counted_by = ?, counted_at = ?,
+                                    note = ?
+                                WHERE id = ?
+                            """, (actual, actual - sys_qty, tanaka_id, now_str,
+                                  "会議室Bから移動済み？要確認", rec_id))
+                        
+                        # 工具: T001, T002 は PENDING（未入力）
+                        elif code == "T003":
+                            # メジャー: 一致 → COUNTED
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = 0, status = 'COUNTED',
+                                    counted_by = ?, counted_at = ?
+                                WHERE id = ?
+                            """, (sys_qty, tanaka_id, now_str, rec_id))
+                        
+                        elif code == "T004":
+                            # カッターナイフ: 不足5個 → COUNTED
+                            actual = max(0, sys_qty - 5)
+                            cursor.execute("""
+                                UPDATE stocktake_records SET
+                                    actual_qty = ?, diff_qty = ?, status = 'COUNTED',
+                                    counted_by = ?, counted_at = ?,
+                                    note = ?
+                                WHERE id = ?
+                            """, (actual, actual - sys_qty, suzuki_id, now_str,
+                                  "各部署への貸出分が戻っていない", rec_id))
+                        
+                        # T001, T002, E003, E004 は PENDING のまま
+                    
+                    print("  ✓ 棚卸しレコードにデモステータスを設定")
+                else:
+                    print("  - 棚卸しセッション「2026年3月定期棚卸し」は既存のためスキップ")
+            except Exception as e:
+                print(f"❌ 棚卸しデモデータ投入エラー: {e}")
+                raise
             
             conn.commit()
             
@@ -3368,6 +3696,8 @@ def reset_demo_data(keep_users_and_depts: bool = False) -> dict:
             cursor = conn.cursor()
             
             counts = {
+                "stocktake_records": 0,
+                "stocktake_sessions": 0,
                 "approvals": 0,
                 "history": 0,
                 "inventory": 0,
@@ -3377,6 +3707,16 @@ def reset_demo_data(keep_users_and_depts: bool = False) -> dict:
                 "users": 0,
                 "departments": 0
             }
+            
+            # 棚卸し関連削除
+            try:
+                cursor.execute("DELETE FROM stocktake_records")
+                counts["stocktake_records"] = cursor.rowcount
+                cursor.execute("DELETE FROM stocktake_sessions")
+                counts["stocktake_sessions"] = cursor.rowcount
+            except Exception:
+                counts["stocktake_records"] = 0
+                counts["stocktake_sessions"] = 0
             
             # 承認待ち削除（テーブルが存在する場合のみ）
             try:
@@ -3435,7 +3775,8 @@ def get_demo_data_counts() -> dict:
             counts = {}
             tables = [
                 "departments", "users", "vendors", "categories", 
-                "items", "inventory", "inventory_history"
+                "items", "inventory", "inventory_history",
+                "stocktake_sessions", "stocktake_records"
             ]
             
             for table in tables:
@@ -3530,7 +3871,7 @@ def get_expiry_alerts(department_name: str = None) -> dict:
     try:
         from datetime import datetime, timedelta
         
-        today = datetime.now(ZoneInfo('Asia/Tokyo')).date()
+        today = datetime.now(JST).date()
         threshold_date = today + timedelta(days=30)
         
         with get_db_connection() as conn:
@@ -5896,7 +6237,7 @@ def backup_inventory_history_to_csv(filepath: str = None) -> str:
     from datetime import datetime
     
     if filepath is None:
-        timestamp = datetime.now(ZoneInfo('Asia/Tokyo')).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
         filepath = f"inventory_history_backup_{timestamp}.csv"
     
     with get_db_connection() as conn:
@@ -5960,6 +6301,490 @@ def cleanup_history_change_types(dry_run: bool = True) -> dict:
             'deleted': order_count,
             'total_affected': inbound_count + order_count
         }
+
+
+# =============================================================================
+# 棚卸し関数
+# =============================================================================
+
+def create_stocktake_session(name: str, start_date: str, end_date: str = None,
+                              note: str = "", created_by: int = None) -> dict:
+    """棚卸しセッションを作成"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO stocktake_sessions (name, start_date, end_date, note, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now', '+09:00'))
+            """, (name, start_date, end_date, note, created_by))
+            session_id = cursor.lastrowid
+            conn.commit()
+            return {"success": True, "message": f"✅ 棚卸しセッション「{name}」を作成しました", "session_id": session_id}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def get_stocktake_sessions(status: str = None) -> list:
+    """棚卸しセッション一覧を取得"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            if status:
+                cursor.execute("""
+                    SELECT s.*, u.display_name as creator_name
+                    FROM stocktake_sessions s
+                    LEFT JOIN users u ON s.created_by = u.id
+                    WHERE s.status = ?
+                    ORDER BY s.created_at DESC
+                """, (status,))
+            else:
+                cursor.execute("""
+                    SELECT s.*, u.display_name as creator_name
+                    FROM stocktake_sessions s
+                    LEFT JOIN users u ON s.created_by = u.id
+                    ORDER BY s.created_at DESC
+                """)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        print(f"Error in get_stocktake_sessions: {e}")
+        return []
+
+
+def get_stocktake_session_by_id(session_id: int) -> dict:
+    """棚卸しセッションを取得"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT s.*, u.display_name as creator_name
+                FROM stocktake_sessions s
+                LEFT JOIN users u ON s.created_by = u.id
+                WHERE s.id = ?
+            """, (session_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        print(f"Error in get_stocktake_session_by_id: {e}")
+        return None
+
+
+def update_stocktake_session_status(session_id: int, status: str) -> dict:
+    """棚卸しセッションのステータスを更新"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            if status == "CLOSED":
+                cursor.execute("""
+                    UPDATE stocktake_sessions 
+                    SET status = ?, closed_at = datetime('now', '+09:00')
+                    WHERE id = ?
+                """, (status, session_id))
+            else:
+                cursor.execute("""
+                    UPDATE stocktake_sessions SET status = ? WHERE id = ?
+                """, (status, session_id))
+            conn.commit()
+            return {"success": True, "message": f"✅ セッションステータスを {status} に更新しました"}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def initialize_stocktake_records(session_id: int) -> dict:
+    """棚卸し対象物品の記録を一括生成"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # is_inventory_target=1 かつ is_active=1 の物品を対象
+            cursor.execute("""
+                INSERT OR IGNORE INTO stocktake_records (session_id, item_id, system_qty, status)
+                SELECT ?, i.id, COALESCE(inv.quantity, 0), 'PENDING'
+                FROM items i
+                LEFT JOIN inventory inv ON i.id = inv.item_id
+                WHERE i.is_active = 1 
+                  AND COALESCE(i.is_inventory_target, 1) = 1
+            """, (session_id,))
+            count = cursor.rowcount
+            conn.commit()
+            return {"success": True, "message": f"✅ {count}件の棚卸し記録を生成しました", "count": count}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def get_stocktake_records(session_id: int, status: str = None,
+                           category: str = None, department: str = None,
+                           search: str = None) -> list:
+    """棚卸し記録一覧を取得"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT sr.*, i.item_name, i.item_code, i.category, i.department_tags,
+                       i.vendor_name, i.unit_price, i.is_asset, i.location_text,
+                       inv.location as inv_location,
+                       cb.display_name as counted_by_name,
+                       vb.display_name as verified_by_name,
+                       ab.display_name as approved_by_name
+                FROM stocktake_records sr
+                JOIN items i ON sr.item_id = i.id
+                LEFT JOIN inventory inv ON i.id = inv.item_id
+                LEFT JOIN users cb ON sr.counted_by = cb.id
+                LEFT JOIN users vb ON sr.verified_by = vb.id
+                LEFT JOIN users ab ON sr.approved_by = ab.id
+                WHERE sr.session_id = ?
+            """
+            params = [session_id]
+            
+            if status:
+                query += " AND sr.status = ?"
+                params.append(status)
+            if category:
+                query += " AND i.category = ?"
+                params.append(category)
+            if department:
+                query += " AND i.department_tags LIKE ?"
+                params.append(f"%{department}%")
+            if search:
+                query += " AND (i.item_name LIKE ? OR i.item_code LIKE ?)"
+                params.extend([f"%{search}%", f"%{search}%"])
+            
+            query += " ORDER BY i.category, i.item_name"
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        print(f"Error in get_stocktake_records: {e}")
+        return []
+
+
+def update_stocktake_record_count(record_id: int, actual_qty: int,
+                                    counted_by: int, note: str = "") -> dict:
+    """棚卸し記録の実数を更新（現場入力）"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT system_qty FROM stocktake_records WHERE id = ?", (record_id,))
+            row = cursor.fetchone()
+            if not row:
+                return {"success": False, "message": "❌ 記録が見つかりません"}
+            
+            system_qty = row["system_qty"]
+            diff_qty = actual_qty - system_qty
+            
+            cursor.execute("""
+                UPDATE stocktake_records 
+                SET actual_qty = ?, diff_qty = ?, counted_by = ?,
+                    counted_at = datetime('now', '+09:00'),
+                    note = ?, status = 'COUNTED'
+                WHERE id = ?
+            """, (actual_qty, diff_qty, counted_by, note, record_id))
+            conn.commit()
+            return {"success": True, "message": "✅ 実数を記録しました",
+                    "diff_qty": diff_qty}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def verify_stocktake_record(record_id: int, verified_by: int) -> dict:
+    """棚卸し記録を確認（総務確認）"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE stocktake_records 
+                SET verified_by = ?, verified_at = datetime('now', '+09:00'),
+                    status = 'VERIFIED'
+                WHERE id = ? AND status = 'COUNTED'
+            """, (verified_by, record_id))
+            if cursor.rowcount == 0:
+                return {"success": False, "message": "❌ 確認対象の記録が見つかりません（ステータス不正）"}
+            conn.commit()
+            return {"success": True, "message": "✅ 確認しました"}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def approve_stocktake_record(record_id: int, approved_by: int) -> dict:
+    """棚卸し記録を承認（上長承認）"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE stocktake_records 
+                SET approved_by = ?, approved_at = datetime('now', '+09:00'),
+                    status = 'APPROVED'
+                WHERE id = ? AND status = 'VERIFIED'
+            """, (approved_by, record_id))
+            if cursor.rowcount == 0:
+                return {"success": False, "message": "❌ 承認対象の記録が見つかりません（ステータス不正）"}
+            conn.commit()
+            return {"success": True, "message": "✅ 承認しました"}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def batch_verify_stocktake_records(record_ids: list, verified_by: int) -> dict:
+    """棚卸し記録を一括確認"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            success_count = 0
+            for rid in record_ids:
+                cursor.execute("""
+                    UPDATE stocktake_records 
+                    SET verified_by = ?, verified_at = datetime('now', '+09:00'),
+                        status = 'VERIFIED'
+                    WHERE id = ? AND status = 'COUNTED'
+                """, (verified_by, rid))
+                success_count += cursor.rowcount
+            conn.commit()
+            return {"success": True, "message": f"✅ {success_count}件を確認しました"}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def batch_approve_stocktake_records(record_ids: list, approved_by: int) -> dict:
+    """棚卸し記録を一括承認"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            success_count = 0
+            for rid in record_ids:
+                cursor.execute("""
+                    UPDATE stocktake_records 
+                    SET approved_by = ?, approved_at = datetime('now', '+09:00'),
+                        status = 'APPROVED'
+                    WHERE id = ? AND status = 'VERIFIED'
+                """, (approved_by, rid))
+                success_count += cursor.rowcount
+            conn.commit()
+            return {"success": True, "message": f"✅ {success_count}件を承認しました"}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def apply_stocktake_adjustments(session_id: int, user_name: str, 
+                                  department: str = "") -> dict:
+    """承認済み棚卸し記録を在庫に反映（差異分を調整）"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 承認済み＆差異ありの記録を取得
+            cursor.execute("""
+                SELECT sr.id, sr.item_id, sr.system_qty, sr.actual_qty, sr.diff_qty,
+                       i.item_name
+                FROM stocktake_records sr
+                JOIN items i ON sr.item_id = i.id
+                WHERE sr.session_id = ? AND sr.status = 'APPROVED' AND sr.diff_qty != 0
+            """, (session_id,))
+            records = cursor.fetchall()
+            
+            if not records:
+                return {"success": True, "message": "⚠️ 反映対象の記録がありません（差異なし）"}
+            
+            adjusted_count = 0
+            for rec in records:
+                # 在庫を更新
+                cursor.execute("""
+                    UPDATE inventory
+                    SET quantity = ?,
+                        updated_at = datetime('now', '+09:00')
+                    WHERE item_id = ?
+                """, (rec["actual_qty"], rec["item_id"]))
+                
+                # 履歴に記録
+                adjust_note = f"[棚卸し調整] セッションID:{session_id} ({rec['system_qty']} → {rec['actual_qty']})"
+                cursor.execute("""
+                    INSERT INTO inventory_history (
+                        item_id, change_type, quantity, 
+                        user_name, department, status, note, created_at
+                    ) VALUES (?, 'ADJUST', ?, ?, ?, 'CONFIRMED', ?, datetime('now', '+09:00'))
+                """, (rec["item_id"], abs(rec["diff_qty"]), user_name, department, adjust_note))
+                
+                # 記録ステータスを更新
+                cursor.execute("""
+                    UPDATE stocktake_records SET status = 'APPLIED' WHERE id = ?
+                """, (rec["id"],))
+                
+                adjusted_count += 1
+            
+            conn.commit()
+            return {"success": True, "message": f"✅ {adjusted_count}件の在庫調整を反映しました",
+                    "adjusted_count": adjusted_count}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def get_stocktake_summary(session_id: int) -> dict:
+    """棚卸しセッションのサマリー情報を取得"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_items,
+                    SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pending_count,
+                    SUM(CASE WHEN status = 'COUNTED' THEN 1 ELSE 0 END) as counted_count,
+                    SUM(CASE WHEN status = 'VERIFIED' THEN 1 ELSE 0 END) as verified_count,
+                    SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) as approved_count,
+                    SUM(CASE WHEN status = 'APPLIED' THEN 1 ELSE 0 END) as applied_count,
+                    SUM(CASE WHEN diff_qty != 0 AND actual_qty IS NOT NULL THEN 1 ELSE 0 END) as diff_count,
+                    SUM(CASE WHEN diff_qty > 0 THEN diff_qty ELSE 0 END) as total_surplus,
+                    SUM(CASE WHEN diff_qty < 0 THEN ABS(diff_qty) ELSE 0 END) as total_shortage
+                FROM stocktake_records
+                WHERE session_id = ?
+            """, (session_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else {}
+    except Exception as e:
+        print(f"Error in get_stocktake_summary: {e}")
+        return {}
+
+
+def get_stocktake_diff_records(session_id: int) -> list:
+    """差異ありの棚卸し記録を取得"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT sr.*, i.item_name, i.item_code, i.category, i.unit_price,
+                       i.department_tags, i.location_text,
+                       cb.display_name as counted_by_name,
+                       vb.display_name as verified_by_name,
+                       ab.display_name as approved_by_name
+                FROM stocktake_records sr
+                JOIN items i ON sr.item_id = i.id
+                LEFT JOIN users cb ON sr.counted_by = cb.id
+                LEFT JOIN users vb ON sr.verified_by = vb.id
+                LEFT JOIN users ab ON sr.approved_by = ab.id
+                WHERE sr.session_id = ? AND sr.diff_qty != 0 AND sr.actual_qty IS NOT NULL
+                ORDER BY ABS(sr.diff_qty) DESC
+            """, (session_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        print(f"Error in get_stocktake_diff_records: {e}")
+        return []
+
+
+# --- テンプレート管理 ---
+
+def create_stocktake_template(name: str, description: str = "",
+                                file_type: str = "excel") -> dict:
+    """棚卸しテンプレートを作成"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO stocktake_templates (name, description, file_type, created_at, updated_at)
+                VALUES (?, ?, ?, datetime('now', '+09:00'), datetime('now', '+09:00'))
+            """, (name, description, file_type))
+            template_id = cursor.lastrowid
+            conn.commit()
+            return {"success": True, "message": f"✅ テンプレート「{name}」を作成しました", "template_id": template_id}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "❌ 同名のテンプレートが既に存在します"}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def get_stocktake_templates(active_only: bool = True) -> list:
+    """棚卸しテンプレート一覧を取得"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            if active_only:
+                cursor.execute("SELECT * FROM stocktake_templates WHERE is_active = 1 ORDER BY name")
+            else:
+                cursor.execute("SELECT * FROM stocktake_templates ORDER BY name")
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        print(f"Error in get_stocktake_templates: {e}")
+        return []
+
+
+def get_stocktake_template_by_id(template_id: int) -> dict:
+    """棚卸しテンプレートを取得"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM stocktake_templates WHERE id = ?", (template_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        return None
+
+
+def update_stocktake_template(template_id: int, name: str = None,
+                                description: str = None, is_active: int = None) -> dict:
+    """棚卸しテンプレートを更新"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            updates = []
+            params = []
+            if name is not None:
+                updates.append("name = ?")
+                params.append(name)
+            if description is not None:
+                updates.append("description = ?")
+                params.append(description)
+            if is_active is not None:
+                updates.append("is_active = ?")
+                params.append(is_active)
+            updates.append("updated_at = datetime('now', '+09:00')")
+            params.append(template_id)
+            
+            cursor.execute(f"""
+                UPDATE stocktake_templates SET {', '.join(updates)} WHERE id = ?
+            """, params)
+            conn.commit()
+            return {"success": True, "message": "✅ テンプレートを更新しました"}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def set_template_mappings(template_id: int, mappings: list) -> dict:
+    """テンプレートマッピングを設定（既存を削除して再作成）"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM stocktake_template_mappings WHERE template_id = ?", (template_id,))
+            for i, m in enumerate(mappings):
+                cursor.execute("""
+                    INSERT INTO stocktake_template_mappings 
+                    (template_id, field_name, excel_cell, display_label, sort_order)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (template_id, m["field_name"], m["excel_cell"],
+                      m.get("display_label", ""), i))
+            conn.commit()
+            return {"success": True, "message": f"✅ {len(mappings)}件のマッピングを設定しました"}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
+
+
+def get_template_mappings(template_id: int) -> list:
+    """テンプレートマッピングを取得"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM stocktake_template_mappings 
+                WHERE template_id = ? ORDER BY sort_order
+            """, (template_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        return []
+
+
+def delete_stocktake_session(session_id: int) -> dict:
+    """棚卸しセッションと関連レコードを削除"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM stocktake_records WHERE session_id = ?", (session_id,))
+            cursor.execute("DELETE FROM stocktake_sessions WHERE id = ?", (session_id,))
+            conn.commit()
+            return {"success": True, "message": "✅ セッションを削除しました"}
+    except Exception as e:
+        return {"success": False, "message": f"❌ エラー: {str(e)}"}
 
 
 if __name__ == "__main__":

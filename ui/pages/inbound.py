@@ -49,13 +49,17 @@ def show_inbound_page():
     if not require_min_role("USER", "入庫処理はUSER以上の権限が必要です（ゲストユーザーは入庫不可）"):
         return
     
-    # タブ切り替え
-    tab1, tab2 = st.tabs(["🚚 発注品入庫", "📦 通常入庫"])
-    
-    with tab1:
+    # セクション切り替え（rerun時も保持）
+    section = st.radio(
+        "表示セクション",
+        options=["🚚 発注品入庫", "📦 通常入庫"],
+        horizontal=True,
+        key="inbound_section",
+    )
+
+    if section == "🚚 発注品入庫":
         show_purchase_order_inbound_tab()
-    
-    with tab2:
+    else:
         show_normal_inbound_tab()
 
 

@@ -6,7 +6,7 @@ app.py に定義されていた SQL クエリ関数を集約。
 """
 
 import pandas as pd
-from db import get_db_connection
+from repositories.base import get_db_connection
 
 
 def get_inventory_list(search_query="", category_filter="", asset_filter="すべて",

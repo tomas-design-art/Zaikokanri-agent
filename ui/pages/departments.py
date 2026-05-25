@@ -25,11 +25,16 @@ def show_department_management_page():
     if not require_role("ADMIN", "部署管理は管理者のみ使用できます"):
         return
     
-    # タブで機能を分割
-    tab1, tab2 = st.tabs(["📋 部署一覧", "➕ 新規追加"])
+    # セクション切替（rerun時も保持）
+    section = st.radio(
+        "表示セクション",
+        options=["📋 部署一覧", "➕ 新規追加"],
+        horizontal=True,
+        key="departments_section",
+    )
     
     # ========== タブ1: 部署一覧・編集 ==========
-    with tab1:
+    if section == "📋 部署一覧":
         # === 検索・フィルタ ===
         st.subheader("🔍 検索・フィルタ")
         
@@ -179,7 +184,7 @@ def show_department_management_page():
             st.info("📭 条件に一致する部署がありません")
     
     # ========== タブ2: 新規追加 ==========
-    with tab2:
+    if section == "➕ 新規追加":
         st.subheader("➕ 新規部署追加")
         
         with st.form("create_dept_form", clear_on_submit=True):

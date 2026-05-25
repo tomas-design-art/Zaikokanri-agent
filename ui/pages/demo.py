@@ -30,7 +30,7 @@ def show_demo_mode_page():
     
     counts = get_demo_data_counts()
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("部署", counts.get("departments", 0))
         st.metric("ユーザー", counts.get("users", 0))
@@ -43,14 +43,22 @@ def show_demo_mode_page():
     with col4:
         st.metric("履歴", counts.get("inventory_history", 0))
         st.metric("承認待ち", counts.get("approval_queue", 0))
+    with col5:
+        st.metric("棚卸しセッション", counts.get("stocktake_sessions", 0))
+        st.metric("棚卸しレコード", counts.get("stocktake_records", 0))
     
     st.divider()
     
-    # タブで機能を分割
-    tab1, tab2 = st.tabs(["➕ デモデータ投入", "🗑️ デモリセット"])
+    # セクション切替（rerun時も保持）
+    section = st.radio(
+        "表示セクション",
+        options=["➕ デモデータ投入", "🗑️ デモリセット"],
+        horizontal=True,
+        key="demo_section",
+    )
     
     # ========== タブ1: デモデータ投入 ==========
-    with tab1:
+    if section == "➕ デモデータ投入":
         st.subheader("➕ デモデータ一括投入")
         
         st.markdown("""
@@ -63,6 +71,9 @@ def show_demo_mode_page():
         - 📊 在庫: 全物品に在庫設定
         - 📝 履歴: 10件の物品に入出庫履歴
         - ✋ 承認待ち: 3件の出庫申請
+        - 📋 棚卸し: セッション1件 + 対象物品レコード（医薬品・電子機器・家具・工具）
+          - 未入力(PENDING)、入力済(COUNTED)、確認済(VERIFIED)、承認済(APPROVED)が混在
+          - 差異データ（一致・過剰・不足）を含む
         """)
         
         st.warning("⚠️ 既存データと重複する場合はスキップされます")
@@ -81,7 +92,7 @@ def show_demo_mode_page():
                         inserted_counts = result.get("counts", {})
                         st.markdown("**投入された件数:**")
                         
-                        col_a, col_b = st.columns(2)
+                        col_a, col_b, col_c = st.columns(3)
                         with col_a:
                             st.write(f"- 部署: {inserted_counts.get('departments', 0)}件")
                             st.write(f"- ユーザー: {inserted_counts.get('users', 0)}件")
@@ -92,6 +103,9 @@ def show_demo_mode_page():
                             st.write(f"- 在庫: {inserted_counts.get('inventory', 0)}件")
                             st.write(f"- 履歴: {inserted_counts.get('history', 0)}件")
                             st.write(f"- 承認待ち: {inserted_counts.get('approvals', 0)}件")
+                        with col_c:
+                            st.write(f"- 棚卸しセッション: {inserted_counts.get('stocktake_sessions', 0)}件")
+                            st.write(f"- 棚卸しレコード: {inserted_counts.get('stocktake_records', 0)}件")
                         
                         st.balloons()
                         
@@ -123,9 +137,13 @@ def show_demo_mode_page():
             if st.button("📊 在庫一覧", use_container_width=True):
                 st.session_state.page = "inventory"
                 st.rerun()
+            
+            if st.button("📋 棚卸しセッション", use_container_width=True):
+                st.session_state.page = "stocktake_sessions"
+                st.rerun()
     
     # ========== タブ2: デモリセット ==========
-    with tab2:
+    if section == "🗑️ デモリセット":
         st.subheader("🗑️ デモデータリセット")
         
         st.warning("⚠️ この操作は取り消せません。注意して実行してください。")
@@ -140,6 +158,7 @@ def show_demo_mode_page():
         if keep_users:
             st.markdown("""
             **削除されるデータ:**
+            - 📋 棚卸しレコード・セッション
             - 📦 物品マスター
             - 🏢 業者
             - 🏷️ カテゴリ
@@ -154,6 +173,7 @@ def show_demo_mode_page():
         else:
             st.markdown("""
             **削除されるデータ:**
+            - 📋 棚卸しレコード・セッション
             - 📦 物品マスター
             - 🏢 業者
             - 🏷️ カテゴリ
@@ -191,7 +211,7 @@ def show_demo_mode_page():
                                 deleted_counts = result.get("counts", {})
                                 st.markdown("**削除された件数:**")
                                 
-                                col_a, col_b = st.columns(2)
+                                col_a, col_b, col_c = st.columns(3)
                                 with col_a:
                                     if not keep_users:
                                         st.write(f"- 部署: {deleted_counts.get('departments', 0)}件")
@@ -203,6 +223,9 @@ def show_demo_mode_page():
                                     st.write(f"- 在庫: {deleted_counts.get('inventory', 0)}件")
                                     st.write(f"- 履歴: {deleted_counts.get('history', 0)}件")
                                     st.write(f"- 承認待ち: {deleted_counts.get('approvals', 0)}件")
+                                with col_c:
+                                    st.write(f"- 棚卸しセッション: {deleted_counts.get('stocktake_sessions', 0)}件")
+                                    st.write(f"- 棚卸しレコード: {deleted_counts.get('stocktake_records', 0)}件")
                                 
                                 st.session_state.demo_reset_confirm = False
                                 

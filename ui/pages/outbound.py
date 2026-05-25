@@ -231,15 +231,17 @@ def show_outbound_page():
     if is_guest():
         show_single_outbound()
     else:
-        # タブで「単品出庫」と「クイック出庫」を分ける
-        tab1, tab2 = st.tabs(["📦 単品出庫", "⚡ クイック出庫（まとめて出庫）"])
-        
-        with tab1:
-            # === 単品出庫（従来の処理） ===
+        # セクション切替（rerun時も保持）
+        section = st.radio(
+            "出庫モード",
+            options=["📦 単品出庫", "⚡ クイック出庫（まとめて出庫）"],
+            horizontal=True,
+            key="outbound_section",
+        )
+
+        if section == "📦 単品出庫":
             show_single_outbound()
-        
-        with tab2:
-            # === クイック出庫（まとめて出庫） ===
+        else:
             show_quick_outbound()
 
 

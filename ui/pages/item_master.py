@@ -33,10 +33,15 @@ def show_item_master_management_page():
     if not require_role("ADMIN", "物品管理は管理者のみ使用できます"):
         return
     
-    # タブで「一覧」「新規登録」「カテゴリ管理」「CSV取り込み」を分ける
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 物品一覧", "➕ 新規登録", "🏷️ カテゴリ管理", "📥 CSV取り込み"])
-    
-    with tab1:
+    # セクション切替（rerun時も保持）
+    section = st.radio(
+        "表示セクション",
+        options=["📋 物品一覧", "➕ 新規登録", "🏷️ カテゴリ管理", "📥 CSV取り込み"],
+        horizontal=True,
+        key="item_master_section",
+    )
+
+    if section == "📋 物品一覧":
         # === 物品一覧（表形式） ===
         st.subheader("📋 物品一覧")
         
@@ -116,6 +121,7 @@ def show_item_master_management_page():
                     "業者品番": item.get('vendor_item_code') or "-",
                     "単価": f"¥{item.get('unit_price', 0):,.0f}",
                     "種別": "資産" if item.get('is_asset') else "消耗品",
+                    "棚卸対象": "✅" if item.get('is_inventory_target', 1) else "⬜",
                     "部署タグ": item.get('department_tags') or "-"
                 })
             
@@ -184,6 +190,8 @@ def show_item_master_management_page():
                         st.write(f"**部署タグ:** {item.get('department_tags') or '-'}")
                     
                     st.write(f"**状態:** {'🟢 有効' if item.get('is_active') else '🔴 無効'}")
+                    inv_target = item.get('is_inventory_target', 1)
+                    st.write(f"**棚卸し対象:** {'✅ 対象' if inv_target else '⬜ 対象外'}")
                     
                     # 操作ボタン
                     col_btn1, col_btn2, col_btn3 = st.columns(3)
@@ -217,7 +225,7 @@ def show_item_master_management_page():
                 else:
                     st.error(f"❌ 物品ID {st.session_state.viewing_item_id} が見つかりません")
     
-    with tab2:
+    if section == "➕ 新規登録":
         # === 新規登録フォーム ===
         st.subheader("➕ 新規物品登録")
         
@@ -369,7 +377,7 @@ def show_item_master_management_page():
             st.success(st.session_state.item_register_success)
             del st.session_state.item_register_success
     
-    with tab3:
+    if section == "🏷️ カテゴリ管理":
         # === カテゴリ管理 ===
         st.subheader("🏷️ カテゴリ管理")
         
@@ -493,6 +501,14 @@ def show_item_master_management_page():
                 if not is_common and not selected_depts:
                     st.warning("⚠️ 利用部署タグが未設定です。「全社共通」または部署を選択してください。")
                 
+                # 棚卸し対象フラグ
+                is_inventory_target = st.checkbox(
+                    "📋 棚卸し対象",
+                    value=bool(item.get('is_inventory_target', 1)),
+                    key=f"inv_target_edit_{item_id}",
+                    help="チェックを外すと棚卸しセッションの対象から除外されます"
+                )
+                
                 st.caption("💡 単価が50,000円以上の場合、自動的に「資産」として登録されます")
                 
                 col_btn1, col_btn2 = st.columns(2)
@@ -558,7 +574,8 @@ def show_item_master_management_page():
                             frequency_tag=frequency_tag if frequency_tag else None,
                             expiry_date=expiry_date,
                             owner_department_id=owner_department_id,
-                            is_common=1 if is_common else 0
+                            is_common=1 if is_common else 0,
+                            is_inventory_target=1 if is_inventory_target else 0
                         )
                         
                         if result['success']:
@@ -572,7 +589,7 @@ def show_item_master_management_page():
                     del st.session_state.editing_item_id
                     st.rerun()
     
-    with tab4:
+    if section == "📥 CSV取り込み":
         # === CSV取り込み ===
         show_csv_import_tab()
 

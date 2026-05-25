@@ -38,11 +38,16 @@ def show_user_management_page():
     dept_options = [(d['id'], d['name']) for d in departments]
     dept_names = ["すべて"] + [d['name'] for d in departments]
     
-    # タブで機能を分割
-    tab1, tab2 = st.tabs(["📋 ユーザー一覧", "➕ 新規作成"])
+    # セクション切替（rerun時も保持）
+    section = st.radio(
+        "表示セクション",
+        options=["📋 ユーザー一覧", "➕ 新規作成"],
+        horizontal=True,
+        key="users_section",
+    )
     
     # ========== タブ1: ユーザー一覧・編集 ==========
-    with tab1:
+    if section == "📋 ユーザー一覧":
         # === 検索・フィルタ ===
         st.subheader("🔍 検索・フィルタ")
         
@@ -275,7 +280,7 @@ def show_user_management_page():
             st.info("📭 条件に一致するユーザーがいません")
     
     # ========== タブ2: 新規作成 ==========
-    with tab2:
+    if section == "➕ 新規作成":
         st.subheader("➕ 新規ユーザー作成")
         
         with st.form("create_user_form", clear_on_submit=True):

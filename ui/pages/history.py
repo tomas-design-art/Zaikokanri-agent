@@ -36,11 +36,16 @@ def show_history_page():
     current_time = datetime.now(ZoneInfo('Asia/Tokyo')).strftime("%H:%M:%S")
     st.caption(f"🕒 データ取得時刻: {current_time}")
     
-    # タブで「確定履歴」と「申請（承認待ち）」を分ける
-    tab1, tab2 = st.tabs(["✅ 確定履歴", "📝 申請（承認待ち）"])
+    # セクション切替（rerun時も保持）
+    section = st.radio(
+        "表示セクション",
+        options=["✅ 確定履歴", "📝 申請（承認待ち）"],
+        horizontal=True,
+        key="history_section",
+    )
     
     # ========== タブ1: 確定履歴 ==========
-    with tab1:
+    if section == "✅ 確定履歴":
         # フィルタフォーム
         st.subheader("🔍 履歴検索")
     
@@ -215,7 +220,7 @@ def show_history_page():
             )
     
     # ========== タブ2: 申請（承認待ち） ==========
-    with tab2:
+    if section == "📝 申請（承認待ち）":
         st.subheader("📝 承認待ち申請一覧")
         
         # 表示対象を権限に応じて決定

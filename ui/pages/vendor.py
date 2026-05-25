@@ -26,10 +26,15 @@ def show_vendor_management_page():
     if not require_role("ADMIN", "業者管理は管理者のみ使用できます"):
         return
     
-    # タブで「一覧」「新規登録」を分ける
-    tab1, tab2 = st.tabs(["📋 業者一覧", "➕ 新規登録"])
-    
-    with tab1:
+    # セクション切替（rerun時も保持）
+    section = st.radio(
+        "表示セクション",
+        options=["📋 業者一覧", "➕ 新規登録"],
+        horizontal=True,
+        key="vendor_section",
+    )
+
+    if section == "📋 業者一覧":
         # === 検索・フィルタ ===
         st.subheader("🔍 検索・フィルタ")
         
@@ -210,7 +215,7 @@ def show_vendor_management_page():
         else:
             st.info("📭 条件に一致する業者がありません")
     
-    with tab2:
+    if section == "➕ 新規登録":
         # === 新規登録フォーム ===
         st.subheader("➕ 新規業者登録")
         

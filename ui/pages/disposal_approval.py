@@ -38,10 +38,15 @@ def show_disposal_approval_page():
     current_user = get_current_user()
     approver_id = current_user.get("id")
 
-    # タブ: 承認待ち / 処理済み
-    tab1, tab2 = st.tabs(["⏳ 承認待ち", "📋 処理済み"])
+    # セクション切替（rerun時も保持）
+    section = st.radio(
+        "表示セクション",
+        options=["⏳ 承認待ち", "📋 処理済み"],
+        horizontal=True,
+        key="disposal_approval_section",
+    )
 
-    with tab1:
+    if section == "⏳ 承認待ち":
         st.subheader("⏳ 承認待ち廃棄申請")
 
         pending_requests = get_disposal_requests(status='PENDING')
@@ -145,7 +150,7 @@ def show_disposal_approval_page():
                                     del st.session_state[f"show_reject_{req['id']}"]
                                     st.rerun()
 
-    with tab2:
+    if section == "📋 処理済み":
         st.subheader("📋 処理済み廃棄申請")
 
         # 承認済みと却下済みを取得

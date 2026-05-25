@@ -40,10 +40,15 @@ def show_alert_page():
         if user_dept:
             st.info(f"📍 表示範囲: **{user_dept}** の物品のみ")
     
-    # タブで在庫アラートと期限アラートを分ける
-    tab1, tab2 = st.tabs(["📦 在庫不足", "⏰ 期限"])
-    
-    with tab1:
+    # セクション切替（rerun時も保持）
+    section = st.radio(
+        "表示セクション",
+        options=["📦 在庫不足", "⏰ 期限"],
+        horizontal=True,
+        key="alert_section",
+    )
+
+    if section == "📦 在庫不足":
         st.subheader("📦 在庫不足アラート")
         st.caption("在庫数が発注点以下の物品を表示します")
         
@@ -139,7 +144,7 @@ def show_alert_page():
             
             st.info("💡 発注点を見直す場合は「物品マスター管理」から編集してください")
     
-    with tab2:
+    if section == "⏰ 期限":
         st.subheader("⏰ 期限アラート")
         st.caption("期限切れまたは期限間近（30日以内）の物品を表示します")
         

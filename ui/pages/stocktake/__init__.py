@@ -1,0 +1,1 @@
+# stocktake pages package

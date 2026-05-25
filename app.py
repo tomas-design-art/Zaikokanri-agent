@@ -9,14 +9,7 @@ Streamlit ベースのWebアプリケーション。
 
 import os
 import streamlit as st
-from dotenv import load_dotenv
-
-# 環境変数読み込み
-load_dotenv()
-
-# 設定
-AI_ENABLED = os.getenv("AI_ENABLED", "false").lower() == "true"
-DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "inventory.db"))
+from config.settings import AI_ENABLED, DB_PATH
 
 # =============================================================================
 # インフラ関数（DB初期化・チェック）

@@ -88,17 +88,22 @@ def show_purchase_request_admin_page():
     waiting_for_receipt = get_purchase_requests(status="ORDERED", department=query_dept)
     waiting_count = len(waiting_for_receipt) if waiting_for_receipt else 0
 
-    # ========== ステータスタブ ==========
-    tab_pending, tab_approved, tab_hold, tab_rejected, tab_waiting = st.tabs([
-        f"📋 承認待ち ({counts.get('pending', 0)}件)",
-        f"✅ 承認済み ({counts.get('approved', 0)}件)",
-        f"⏸ 保留 ({counts.get('on_hold', 0)}件)",
-        f"❌ 却下 ({counts.get('rejected', 0)}件)",
-        f"🚚 入庫待ち ({waiting_count}件)"
-    ])
+    # ========== ステータス切替（rerun時も保持） ==========
+    label_pending = f"📋 承認待ち ({counts.get('pending', 0)}件)"
+    label_approved = f"✅ 承認済み ({counts.get('approved', 0)}件)"
+    label_hold = f"⏸ 保留 ({counts.get('on_hold', 0)}件)"
+    label_rejected = f"❌ 却下 ({counts.get('rejected', 0)}件)"
+    label_waiting = f"🚚 入庫待ち ({waiting_count}件)"
+
+    section = st.radio(
+        "ステータス",
+        options=[label_pending, label_approved, label_hold, label_rejected, label_waiting],
+        horizontal=True,
+        key="purchase_admin_section",
+    )
 
     # ========== タブ1: 承認待ち（PENDING） ==========
-    with tab_pending:
+    if section == label_pending:
         pending_requests = get_purchase_requests(status="PENDING", department=query_dept)
         
         if not pending_requests:
@@ -190,7 +195,7 @@ def show_purchase_request_admin_page():
                     st.divider()
 
     # ========== タブ2: 承認済み（APPROVED） ==========
-    with tab_approved:
+    if section == label_approved:
         approved_requests = get_purchase_requests(status="APPROVED", department=query_dept)
         
         if not approved_requests:
@@ -368,7 +373,7 @@ def show_purchase_request_admin_page():
                             st.rerun()
 
     # ========== タブ3: 保留（ON_HOLD） ==========
-    with tab_hold:
+    if section == label_hold:
         hold_requests = get_purchase_requests(status="ON_HOLD", department=query_dept)
         
         if not hold_requests:
@@ -460,7 +465,7 @@ def show_purchase_request_admin_page():
                     st.divider()
 
     # ========== タブ4: 却下（REJECTED） ==========
-    with tab_rejected:
+    if section == label_rejected:
         rejected_requests = get_purchase_requests(status="REJECTED", department=query_dept)
         
         if not rejected_requests:
@@ -552,7 +557,7 @@ def show_purchase_request_admin_page():
                     st.divider()
 
     # ========== タブ5: 入庫待ち（ORDERED） ==========
-    with tab_waiting:
+    if section == label_waiting:
         st.caption("💡 発注処理が完了し、現場での入庫待ちの申請です。")
         
         if not waiting_for_receipt:
