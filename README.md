@@ -1,392 +1,80 @@
 # 在庫管理システム
 
-Streamlit ベースの在庫管理アプリケーション（AI機能ON/OFF対応）
+物品・在庫を一元管理する Web アプリケーション（AI 機能 ON/OFF 対応）。
 
-## 特徴
-
-- 📦 物品・在庫の一元管理
-- 🔍 高速検索（数千件対応・インデックス最適化済み）
-- 📊 在庫アラート機能
-- 🤖 AI機能のON/OFF切替可能
-- 🌱 デモモード対応（ダミーデータ投入）
+> **構成変更について**: 旧 Streamlit モノリスは廃止しました。現在は **FastAPI バックエンド + Next.js フロントエンド** の 2 層構成です。
 
 ## 技術スタック
 
-- **Python 3.8+**
-- **Streamlit**: Webアプリケーションフレームワーク
-- **SQLite**: ローカルデータベース
-- **pandas**: データ処理
+| レイヤ | 技術 |
+|---|---|
+| バックエンド | Python 3.11 / FastAPI / SQLAlchemy 2.0 / Alembic |
+| データベース | PostgreSQL（本番） / SQLite（開発） |
+| フロントエンド | TypeScript / Next.js / Tailwind CSS |
+| 認証 | JWT + bcrypt（Cookie ベース） |
+| AI | OpenAI（任意・ON/OFF 切替可能） |
 
-## セットアップ手順
-
-### 1. 仮想環境の作成・有効化
-
-```powershell
-# 仮想環境を作成（初回のみ）
-python -m venv env
-
-# 仮想環境を有効化
-.\env\Scripts\Activate.ps1
-```
-
-### 2. 依存パッケージのインストール
-
-```powershell
-pip install -r requirements.txt
-```
-
-### 3. データベース初期化（ダミーデータ投入）
-
-```powershell
-python data\init_db.py
-```
-
-オプション：既存テーブルをリセットして再作成
-```powershell
-python data\init_db.py --reset
-```
-
-### 4. アプリケーション起動
-
-```powershell
-streamlit run app.py
-```
-
-ブラウザが自動で開き、`http://localhost:8501` でアプリが起動します。
-
-## 環境設定（.env）
-
-`.env` ファイルで以下の設定を変更できます：
-
-```env
-# AI機能の有効/無効切替
-AI_ENABLED=true
-
-# OpenAI APIキー（AI機能使用時に必要）
-OPENAI_API_KEY=your-api-key-here
-
-# データベースファイルパス
-DB_PATH=inventory.db
-
-# デモモード
-DEMO_MODE=true
-```
-
-**AI機能について:**
-- `AI_ENABLED=true` で発注書AI文案生成機能が有効になります
-- OpenAI APIキーが必要（`.env`に`OPENAI_API_KEY`を設定）
-- APIキーが未設定の場合、自動的にテンプレート文案にフォールバックします
-- エラーが発生しても必ず文案は生成されます（堅牢設計）
-
-## プロジェクト構成
+## ディレクトリ構成
 
 ```
 zaikokanri_agent/
-├── app.py              # メインアプリケーション（Streamlit）
-├── db.py               # データベース接続・初期化
-├── ai.py               # AI文案生成モジュール
-├── .env                # 環境変数設定
-├── .env.example        # 環境変数設定サンプル
-├── requirements.txt    # 依存パッケージ
-├── SPEC.md            # 仕様書
-├── README.md          # このファイル
-├── data/
-│   └── init_db.py     # ダミーデータ投入スクリプト
-├── utils/             # ユーティリティモジュール
-│   ├── auth.py        # 認証機能
-│   ├── logger.py      # ログ機能
-│   └── validation.py  # バリデーション
-├── env/               # Python仮想環境（自動生成）
-└── inventory.db       # SQLiteデータベース（自動生成）
+├── backend/        # FastAPI アプリ（API・DB・認証・AI・帳票生成）
+│   ├── app/        # ルーター / サービス / リポジトリ / モデル / スキーマ
+│   ├── alembic/    # DB マイグレーション
+│   └── tests/      # pytest
+├── frontend/       # Next.js アプリ（画面・コンポーネント）
+│   └── src/
+├── docs/           # 仕様・各種ドキュメント
+├── render.yaml     # Render デプロイ Blueprint（backend）
+└── .github/        # CI（backend lint/test, frontend build, secret scan）
 ```
 
-## 使い方
+## セットアップ
 
-### 在庫一覧表示
-
-- 起動後、デフォルトで在庫一覧画面が表示されます
-- 検索ボックスで品目名、品目コード、業者名などで絞り込み可能
-- カテゴリフィルタでカテゴリごとに表示可能
-- ページネーション対応（50/100/200/500件ずつ表示可能）
-
-### 在庫アラート
-
-- 在庫数が閾値以下の品目には「⚠️」マークが表示されます
-- 画面上部に警告メッセージが表示されます
-
-### AI機能（現在は無効）
-
-- `.env` で `AI_ENABLED=true` に設定すると、サイドバーにAI機能メニューが表示されます
-- AI機能は今後実装予定です
-
-## データベース構造
-
-### テーブル
-
-1. **items（物品マスター）**
-   - 品目名、品目コード、業者情報、カテゴリなど
-   - インデックス: 品目名、品目コード、カテゴリ、業者情報
-
-2. **inventory（在庫）**
-   - 各物品の現在在庫数、閾値、保管場所
-
-3. **inventory_history（在庫履歴）**
-   - 入出庫記録、承認状態
-
-## Step1 完成内容
-
-✅ SQLite接続  
-✅ ダミーデータ投入  
-✅ 在庫一覧表示（検索・ページネーション対応）  
-✅ AI_ENABLED=false で動作  
-✅ 数千件対応の設計（インデックス最適化）
-
-## Step2 完成内容
-
-✅ 出庫機能（在庫減算 + 履歴記録）  
-✅ トランザクション処理（在庫更新と履歴記録の同時実行）  
-✅ 在庫不足チェック  
-✅ DB整合性テスト追加  
-✅ 診断情報表示（DBパス・データ取得時刻）
-
-## 整合性テスト
-
-出庫処理の整合性を確認するテストスクリプト：
+### バックエンド
 
 ```powershell
-# 出庫処理の整合性テスト実行
-python tests\test_outbound.py
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+copy .env.example .env   # JWT_SECRET 等を設定
+alembic upgrade head
+uvicorn app.main:app --reload --port 8000
 ```
 
-このテストは以下を確認します：
-- 出庫前後の在庫数の整合性
-- process_outbound()の返却値とDB実データの一致
-- 在庫一覧取得関数での値の一致
-- 履歴テーブルへの正確な記録
+API ドキュメント: http://localhost:8000/docs
 
-## 今後の拡張（Step2以降）
+詳細は [backend/README.md](backend/README.md) を参照。
 
-- ➕ 入庫機能
-- ➖ 出庫機能
-- 👤 ユーザー管理（管理者・一般・ゲスト）
-- 📋 履歴表示
-- 🗑️ 廃棄管理
-- 📊 レポート・分析機能
-- 🤖 AI機能（検索・要約・提案・書類生成）
-
-## トラブルシューティング
-
-### データベースが見つからない
-
-アプリ起動時に「データベースが見つかりません」と表示された場合：
-```powershell
-python data\init_db.py
-```
-
-### 仮想環境がアクティブにならない
-
-PowerShellの実行ポリシーエラーが出る場合：
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-### ポートが既に使用されている
-
-別のポートでStreamlitを起動：
-```powershell
-streamlit run app.py --server.port 8502
-```
-
-### 在庫数が一致しない場合
-
-診断情報を確認：
-1. 各画面下部に表示される「DB: (絶対パス)」が同じか確認
-2. 「データ取得時刻」が最新になっているか確認
-3. 整合性テストを実行：
-```powershell
-python tests\test_outbound.py
-```
-
-### AI発注書文案生成のテスト
-
-ai.pyモジュールの動作確認：
-```powershell
-python test_ai_module.py
-```
-
-このテストでは以下を確認できます：
-- テンプレート生成（APIキー不要）
-- AI文案生成（APIキー必要）
-- フォールバック動作
-
-## AI機能詳細
-
-### 発注書文案生成（ai.py）
-
-**主要関数:**
-- `generate_purchase_order_text(payload)`: 発注書文案生成（AI/テンプレート自動切替）
-- `call_openai_chat(messages, system_prompt)`: OpenAI Chat API呼び出し
-
-**フォールバック動作:**
-1. OpenAI APIキーが設定されている → AI文案を生成
-2. APIキーがない、または呼び出し失敗 → テンプレート文案を生成
-3. どちらの場合も必ず文案を返す（エラーで落ちない）
-
-**使用例:**
-```python
-from ai import generate_purchase_order_text
-
-payload = {
-    "vendor": "サンプル業者",
-    "items": [
-        {"name": "品目A", "code": "A001", "qty": 10, "unit_price": 500}
-    ],
-    "total": 5000,
-    "department": "総務部",
-    "requester_name": "山田太郎"
-}
-
-draft = generate_purchase_order_text(payload)
-print(draft)
-```
-
-## デバッグ機能
-
-### DB診断情報
-
-アプリの各ページ（在庫一覧・出庫）には以下の診断情報が表示されます：
-- **DBパス**: 使用しているデータベースファイルの絶対パス
-- **データ取得時刻**: 現在表示中のデータを取得した時刻
-
-これにより、画面ごとに同じDBを参照しているか、最新データを表示しているかを確認できます。
-
-## ライセンス
-
-社内利用限定
-
-## 更新履歴
-
-- **2026-01-29 (Step1)**: SQLite接続、ダミーデータ、在庫一覧表示
-- **2026-01-29 (Step2)**: 出庫機能、トランザクション処理、整合性テスト、診断機能
-- **2026-02-03**: 本番寄せデモデータ投入スクリプト、ロール別E2Eテスト実装
-
----
-
-## 本番寄せデモデータ（医療現場想定）
-
-### 概要
-
-医療現場の実運用を想定した本番寄せデモデータを投入できるスクリプトを用意しました。
-
-### 投入内容
-
-**マスタデータ:**
-- **部署**: 10部署（総務部、放射線科、検査科、看護部、薬剤部、専門課、運動課、事務、医局、施設管理）
-- **ユーザー**: 12名
-  - ADMIN: 2名（admin/admin123, admin2/admin123）
-  - USER: 7名（U001〜U007 / パスワード: 0000）
-  - GUEST: 3名（G001〜G003 / パスワード: 0000）
-- **業者**: 8社（V001〜V008：医薬品卸、医療材料、文具、工具、IT機器、洗剤、廃棄回収）
-- **カテゴリ**: 10カテゴリ（造影剤、医薬品（内服/外用）、医療材料、滅菌/ガーゼ、消毒・衛生、日用品、事務用品、IT機器、工具/施設）
-
-**物品マスタ**: 62件
-- カテゴリごとに6件前後
-- 全アイテムに以下を設定:
-  - `item_code`: M-1001, N-3001, S-4001 など（カテゴリプレフィックス付き）
-  - `vendor_part_no`: 業者品番（A-IOPAMIRO-300 など）
-  - `unit_price`: 50円〜12,000円（造影剤は高額帯）
-  - `reorder_point`: 消耗品・医療材料・造影剤に設定
-  - `expiry_date`: 医薬品/造影剤/滅菌物に期限設定
-    - 期限切れ: 2件
-    - 期限間近（15〜75日以内）: 5件
-  - `department_tags`: 全社共通/部署専用を混在
-  - `is_asset`: 単価50,000円以上で自動資産化（PC/機器類）
-
-**在庫データ:**
-- 全物品に在庫を設定
-- ゼロ在庫: 3件
-- 発注点割れ: 10件
-- 通常在庫: 発注点の2〜5倍
-
-**履歴データ:**
-- 約700件（過去90日分のOUT中心）
-- 放射線科: 造影剤OUT多め
-- 看護部: 衛生・ガーゼOUT多め
-- 検査科: 採血管OUT多め
-- IN: 10件程度
-- DISPOSE: 5件程度（期限切れ廃棄）
-
-**発注申請データ:**
-- PENDING: 6件（承認待ち）
-- APPROVED: 4件（承認済み）
-- HOLD: 2件（保留中）
-- REJECT: 1件（却下）
-
-### 投入方法
+### フロントエンド
 
 ```powershell
-# デモデータ投入
-python init_production_demo.py
+cd frontend
+npm install
+# .env.local に NEXT_PUBLIC_API_BASE=http://localhost:8000 を設定
+npm run dev
 ```
 
-既存データは自動的にリセットされます（テーブル構造は維持）。
+画面: http://localhost:3000
 
-### ロール別E2Eテスト
-
-デモデータ投入後、ロール別の主要導線をテストできます。
+## テスト
 
 ```powershell
-# ロール別E2Eテスト実行
-python test_actual_flow.py
+# バックエンド
+cd backend; pytest
+
+# フロントエンド
+cd frontend; npm run typecheck; npm run build
 ```
 
-**テスト内容:**
+## デプロイ
 
-**👑 ADMIN ロール:**
-- ログイン確認
-- 物品一覧取得（全件）
-- カテゴリフィルタ動作確認
-- 発注申請管理（承認待ち確認・承認処理）
-- 発注書作成→確定→履歴反映
-- 履歴取得
-- CSV出力
+- **バックエンド**: Render（[render.yaml](render.yaml) の Blueprint、Docker ビルド）
+- **フロントエンド**: Vercel（[frontend/vercel.json](frontend/vercel.json)）
 
-**🧑‍💼 USER ロール（放射線科）:**
-- ログイン確認
-- 在庫一覧取得（全件見える）
-- 出庫処理（造影剤）→履歴反映確認
-- 発注申請作成
+環境変数（`JWT_SECRET` / `DATABASE_URL` / `OPENAI_API_KEY` / `CORS_ORIGINS` 等）は各ホスティング側で設定します。
 
-**🧑‍🦽 GUEST ロール（看護部）:**
-- ログイン確認
-- 在庫一覧（自部署タグ+全社共通のみ表示確認）
-- 出庫候補（他部署専用品が混ざらない確認）
-- 出庫処理
-- 発注申請ページへのアクセス制限確認
+## 仕様
 
-**テスト結果:**
-- 総合成功率、ロール別成功率を表形式で表示
-- 結果はCSVファイルにも保存（`test_results_YYYYMMDD_HHMMSS.csv`）
-
-### GUESTユーザーの部署制限について
-
-GUESTユーザーは「自部署タグ + 全社共通」の物品のみ閲覧・出庫できます。
-
-**フィルタロジック:**
-```python
-# department_tags に自部署名が含まれる
-# または department_tags に "全社" が含まれる  
-# または department_tags が NULL/空
-```
-
-**テスト結果例:**
-- 全体物品: 62件
-- 看護部GUEST: 31件（自部署+全社共通のみ）
-- 放射線科GUEST: 異なる件数（各部署専用品が異なるため）
-
-### 注意事項
-
-- `init_production_demo.py` は既存データを完全リセットします
-- テストは複数回実行可能（在庫が減った場合は再投入推奨）
-- 発注申請の承認/確定は実際にDBを更新します
-
+機能仕様は [SPEC.md](SPEC.md) および [docs/](docs/) を参照してください。
