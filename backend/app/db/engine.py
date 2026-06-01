@@ -14,7 +14,16 @@ class Base(DeclarativeBase):
     """Declarative base for all ORM models."""
 
 
+def _normalize_url(url: str) -> str:
+    """Neon / Render が発行する 'postgresql://' を psycopg3 用スキームに正規化する。
+    'postgresql+psycopg://' はそのまま通す。psycopg2 は依存に含まれないため必須。"""
+    if url.startswith("postgresql://") or url.startswith("postgres://"):
+        url = "postgresql+psycopg" + url[url.index("://"):]
+    return url
+
+
 def _make_engine(url: str) -> Engine:
+    url = _normalize_url(url)
     connect_args: dict = {}
     if url.startswith("sqlite"):
         connect_args = {"check_same_thread": False}

@@ -14,10 +14,12 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
+from app.db.engine import _normalize_url  # noqa: E402
 from app import models  # noqa: F401, E402  ensure all models registered
 
+_db_url = _normalize_url(settings.database_url)
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", _db_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -27,11 +29,11 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.database_url,
+        url=_db_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        render_as_batch=settings.database_url.startswith("sqlite"),
+        render_as_batch=_db_url.startswith("sqlite"),
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -47,7 +49,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            render_as_batch=settings.database_url.startswith("sqlite"),
+            render_as_batch=_db_url.startswith("sqlite"),
         )
         with context.begin_transaction():
             context.run_migrations()
