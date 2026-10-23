@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, staging, develop]
 
+# 方針（開発憲章 5章）：lint・型・テスト・E2E の失敗は止める。
+# 依存の監査ツール（pip-audit / npm audit）の不調・指摘は止めない（結果はログで確認する）。
+
 jobs:
   backend:
     name: Backend (ruff / pytest / pip-audit)
@@ -16,30 +19,70 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
-      - name: Install dependencies
+      - name: Install dependencies (hashed lock, 7-day cutoff)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install --require-hashes -r requirements-dev.lock
 
       - name: Ruff (lint)
-        run: ruff check app tests
+        run: ruff check app tests alembic
 
       - name: Pytest
         env:
-          JWT_SECRET: ci-test-secret
-          DATABASE_URL: sqlite:///./ci_test.db
-          RATE_LIMIT_LOGIN: 10000/minute
-        run: pytest -W ignore::DeprecationWarning
+          JWT_SECRET: ci-test-secret-0123456789abcdef0123456789
+        run: pytest -q
 
-      - name: pip-audit (deps vuln scan)
+      - name: pip-audit (deps vuln scan, non-blocking)
         continue-on-error: true
-        run: pip-audit --strict --skip-editable || true
+        run: pip-audit -r requirements.lock --require-hashes --disable-pip
+
+  backend-postgres:
+    # 本番と同じ PostgreSQL でマイグレーションと全テストを流す（SQLite では見えない不具合を捕まえる）
+    name: Backend on PostgreSQL 15 (alembic / pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: zaiko
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (hashed lock, 7-day cutoff)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements-dev.lock
+
+      - name: Alembic upgrade / downgrade / upgrade on an empty database
+        env:
+          DATABASE_URL: postgresql://postgres:ci-only@localhost:5432/zaiko
+        run: |
+          alembic upgrade head
+          alembic downgrade 0002_seed_defaults
+          alembic upgrade head
+
+      - name: Pytest on PostgreSQL
+        env:
+          JWT_SECRET: ci-test-secret-0123456789abcdef0123456789
+          TEST_DATABASE_URL: postgresql://postgres:ci-only@localhost:5432/zaiko_test
+        run: |
+          PGPASSWORD=ci-only psql -h localhost -U postgres -c "CREATE DATABASE zaiko_test;"
+          pytest -q
 
   frontend:
     name: Frontend (typecheck / lint / build)
@@ -50,30 +93,73 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
 
       - name: Lint
-        run: npm run lint --silent || true
+        run: npm run lint
 
       - name: Build
         env:
           NEXT_PUBLIC_API_BASE: http://localhost:8000
         run: npm run build
 
-      - name: npm audit (prod deps)
+      - name: npm audit (prod deps, non-blocking)
         continue-on-error: true
-        run: npm audit --omit=dev || true
+        run: npm audit --omit=dev
+
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend + browser
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run E2E
+        working-directory: frontend
+        env:
+          CI: "1"
+          E2E_PYTHON: python
+        run: npm run e2e
+
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          retention-days: 7
 
   secrets-scan:
     name: Gitleaks (secret scan)

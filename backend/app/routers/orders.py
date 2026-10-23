@@ -1,5 +1,5 @@
 """発注書 (Purchase Order) 生成エンドポイント。
-承認済み購買申請から、業者別ペイロード/メール本文/PDF/Excel を生成する。
+承認済み（または発注済）の発注申請から、業者別ペイロード/メール本文/PDF/Excel を生成する。
 """
 from __future__ import annotations
 
@@ -10,10 +10,12 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.auth import require_admin
 from app.db import get_db
+from app.models import PurchaseRequest
 from app.services.order_service import (
     build_payloads,
     render_email_text,
@@ -44,8 +46,26 @@ def preview(
 ) -> dict[str, Any]:
     payloads = build_payloads(db, body.request_ids)
     if not payloads:
-        raise HTTPException(status_code=404, detail="該当する承認済み購買申請がありません")
+        raise HTTPException(status_code=404, detail="承認済・発注済の申請が選ばれていません")
     return {"payloads": payloads}
+
+
+@router.post("/mark-ordered")
+def mark_ordered(
+    body: IdsIn,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_admin),
+) -> dict[str, int]:
+    """発注書を送ったら「発注済」にする（C-06）。承認済のものだけが対象。"""
+    res = db.execute(
+        update(PurchaseRequest)
+        .where(PurchaseRequest.id.in_(body.request_ids), PurchaseRequest.status == "APPROVED",
+               PurchaseRequest.deleted_at.is_(None))
+        .values(status="ORDERED")
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return {"updated": res.rowcount}
 
 
 @router.post("/email")

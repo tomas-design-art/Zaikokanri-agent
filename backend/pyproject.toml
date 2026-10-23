@@ -1,49 +1,53 @@
 [project]
 name = "zaikokanri-backend"
-version = "0.1.0"
+version = "0.2.0"
 description = "在庫管理システム バックエンド (FastAPI + SQLAlchemy + PostgreSQL)"
 requires-python = ">=3.11"
+# 直接の依存だけをここに書く。実際に入れる版は requirements*.lock（ハッシュ付き）で固定する。
+# ロックの作り直し（公開7日未満の版は使わない＝開発憲章 1章）:
+#   uv pip compile pyproject.toml --universal --generate-hashes --exclude-newer "7 days" -o requirements.lock
+#   uv pip compile pyproject.toml --universal --generate-hashes --exclude-newer "7 days" --extra dev -o requirements-dev.lock
 dependencies = [
-  "fastapi>=0.110.0",
-  "uvicorn[standard]>=0.27.0",
-  "sqlalchemy>=2.0.25",
-  "alembic>=1.13.0",
-  "psycopg[binary]>=3.1.18",
-  "pydantic>=2.6.0",
-  "pydantic-settings>=2.2.0",
-  "python-jose[cryptography]>=3.3.0",
-  "passlib[bcrypt]>=1.7.4",
-  "bcrypt>=4.1.2",
-  "python-multipart>=0.0.9",
+  "fastapi>=0.120",
+  "uvicorn[standard]>=0.38",
+  "sqlalchemy>=2.0.40",
+  "alembic>=1.16",
+  "psycopg[binary]>=3.2",
+  "pydantic>=2.11",
+  "pydantic-settings>=2.10",
+  "pyjwt>=2.10",
+  "bcrypt>=4.3",
   "slowapi>=0.1.9",
-  "python-dotenv>=1.0.0",
-  "openai>=1.0.0",
-  "fpdf2>=2.7.0",
-  "openpyxl>=3.1.0",
-  "httpx>=0.27.0",
-  "structlog>=24.1.0",
+  "openai>=1.100",
+  "fpdf2>=2.8",
+  "openpyxl>=3.1.5",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.0.0",
-  "pytest-asyncio>=0.23.0",
-  "pytest-cov>=4.1.0",
-  "ruff>=0.3.0",
-  "mypy>=1.8.0",
-  "pip-audit>=2.7.0",
+  "pytest>=8.4",
+  "pytest-cov>=6.0",
+  "httpx>=0.28",
+  "ruff>=0.12",
+  "pip-audit>=2.9",
 ]
 
+[tool.uv.pip]
+exclude-newer = "7 days"
+
 [tool.ruff]
-line-length = 100
+line-length = 110
 target-version = "py311"
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 ignore = ["E501", "B008"]  # B008: FastAPI Depends() パターンを許可
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
+# パッケージとして入れていなくても app / tests を読み込めるようにする（CI はロックの依存だけを入れて pytest を直接呼ぶ）
+pythonpath = ["."]
+filterwarnings = ["ignore::DeprecationWarning"]
 
 [build-system]
 requires = ["setuptools>=68"]

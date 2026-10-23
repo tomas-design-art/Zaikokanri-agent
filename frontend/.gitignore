@@ -5,3 +5,9 @@ node_modules
 out
 dist
 .vercel
+*.tsbuildinfo
+playwright-report
+test-results
+blob-report
+e2e/.auth
+next-env.d.ts

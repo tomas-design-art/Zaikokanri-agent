@@ -4,10 +4,11 @@ All secrets MUST come from environment variables / .env (never hardcoded).
 """
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -29,9 +30,9 @@ class Settings(BaseSettings):
     demo_mode: bool = False
 
     # ---- Database ----
-    # Default to the legacy SQLite DB at repo root so we can run without setup.
+    # 未設定なら backend/zaiko_app.db（SQLite）。本番は DATABASE_URL で PostgreSQL を渡す。
     database_url: str = Field(
-        default_factory=lambda: f"sqlite:///{(PROJECT_ROOT / 'inventory.db').as_posix()}"
+        default_factory=lambda: f"sqlite:///{(BACKEND_DIR / 'zaiko_app.db').as_posix()}"
     )
 
     # ---- JWT ----
@@ -52,7 +53,11 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
 
     # ---- Rate Limit ----
-    rate_limit_login: str = "5/minute"
+    # 会社のネットワークでは全員が同じIPに見えるため、IP単位の制限は緩めにする（A-07）
+    rate_limit_login: str = "30/minute"
+    # 同じアカウントで続けて失敗したらロックする（G-02）
+    login_max_failures: int = 10
+    login_lock_minutes: int = 15
 
     # ---- Business constants (legacy compat) ----
     outbound_max: int = 1000
@@ -61,7 +66,7 @@ class Settings(BaseSettings):
     undo_minutes: int = 10
 
     # ---- Paths ----
-    font_path: Path = BACKEND_DIR / "app" / "assets" / "fonts" / "NotoSansJP-Regular.ttf"
+    font_path: Path = BACKEND_DIR / "fonts" / "NotoSansJP-Regular.ttf"
     font_name: str = "NotoSansJP"
 
     @property
@@ -72,19 +77,26 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.app_env.lower() in {"production", "prod"}
 
-    @field_validator("jwt_secret")
-    @classmethod
-    def _warn_default_secret(cls, v: str) -> str:
-        # Allow default in dev, but enforce strong secret in prod via runtime check below.
-        return v
+
+WEAK_SECRETS = {"change-me", "change-me-please-use-openssl-rand-hex-32"}
+
+
+def validate_settings(s: Settings) -> Settings:
+    """本番設定の確認（G-09）。危険なら起動しない、注意が要るなら警告する。"""
+    if s.is_production:
+        if s.jwt_secret in WEAK_SECRETS or len(s.jwt_secret) < 32:
+            raise RuntimeError("JWT_SECRET must be set to a strong value (>=32 chars) in production")
+        if not s.cookie_secure:
+            logging.getLogger("security").warning(
+                "APP_ENV=production but COOKIE_SECURE=false: login cookies are sent without HTTPS. "
+                "Use HTTPS and set COOKIE_SECURE=true unless this is a closed on-premise network."
+            )
+    return s
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    s = Settings()
-    if s.is_production and (s.jwt_secret in {"change-me", "change-me-please-use-openssl-rand-hex-32"} or len(s.jwt_secret) < 32):
-        raise RuntimeError("JWT_SECRET must be set to a strong value (>=32 chars) in production")
-    return s
+    return validate_settings(Settings())
 
 
 settings = get_settings()

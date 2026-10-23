@@ -1,24 +1,30 @@
-"""Master CRUD: vendors, categories, departments (all admin-only mutations)."""
+"""Master CRUD: vendors, categories, departments (all admin-only mutations).
+
+物品は業者名・カテゴリ名を文字列で持つため、名前を変えたら物品側も同じ名前に直す（E-07）。
+"""
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user, require_admin
 from app.db import get_db
-from app.models import Category, Department, Vendor
+from app.models import Category, Department, Item, User, Vendor
+from app.schemas.common import OptStr, ReqStr
 
 # ---------- Vendors ----------
 vendors_router = APIRouter(prefix="/vendors", tags=["vendors"])
 
 
 class VendorBase(BaseModel):
-    vendor_code: str
-    vendor_name: str
-    address: str | None = None
-    phone: str | None = None
-    email: str | None = None
+    vendor_code: ReqStr = Field(max_length=32)
+    vendor_name: ReqStr = Field(max_length=128)
+    address: OptStr = None
+    phone: OptStr = Field(default=None, max_length=32)
+    email: OptStr = Field(default=None, max_length=128)
 
 
 class VendorOut(VendorBase):
@@ -28,24 +34,24 @@ class VendorOut(VendorBase):
 
 
 class VendorUpdate(BaseModel):
-    vendor_code: str | None = None
-    vendor_name: str | None = None
-    address: str | None = None
-    phone: str | None = None
-    email: str | None = None
-    is_active: int | None = None
+    vendor_code: ReqStr | None = Field(default=None, max_length=32)
+    vendor_name: ReqStr | None = Field(default=None, max_length=128)
+    address: OptStr = None
+    phone: OptStr = Field(default=None, max_length=32)
+    email: OptStr = Field(default=None, max_length=128)
+    is_active: Literal[0, 1] | None = None
 
 
 @vendors_router.get("", response_model=list[VendorOut])
 def list_vendors(
-    is_active: int | None = 1,
+    include_inactive: bool = False,
     db: Session = Depends(get_db),
     _: CurrentUser = Depends(get_current_user),
 ) -> list[VendorOut]:
     q = db.query(Vendor)
-    if is_active is not None:
-        q = q.filter(Vendor.is_active == is_active)
-    return [VendorOut.model_validate(v) for v in q.order_by(Vendor.vendor_name).all()]
+    if not include_inactive:
+        q = q.filter(Vendor.is_active == 1)
+    return [VendorOut.model_validate(v) for v in q.order_by(Vendor.is_active.desc(), Vendor.vendor_name).all()]
 
 
 @vendors_router.post("", response_model=VendorOut, status_code=201)
@@ -63,15 +69,19 @@ def update_vendor(
 ) -> VendorOut:
     v = db.get(Vendor, vid)
     if not v:
-        raise HTTPException(404, "Not found")
-    for k, val in body.model_dump(exclude_unset=True).items():
+        raise HTTPException(404, "見つかりません")
+    data = body.model_dump(exclude_unset=True)
+    new_name = data.get("vendor_name")
+    if new_name and new_name != v.vendor_name:
+        db.query(Item).filter(Item.vendor_name == v.vendor_name).update({"vendor_name": new_name}, synchronize_session=False)
+    for k, val in data.items():
+        if val is None and k in {"vendor_code", "vendor_name", "is_active"}:
+            continue
         setattr(v, k, val)
     db.commit()
     db.refresh(v)
     return VendorOut.model_validate(v)
 
-
-router = vendors_router  # exported as `router` for main.py
 
 
 # ---------- Categories ----------
@@ -79,7 +89,12 @@ categories_router = APIRouter(prefix="/categories", tags=["categories"])
 
 
 class CategoryIn(BaseModel):
-    name: str
+    name: ReqStr = Field(max_length=64)
+
+
+class MasterUpdate(BaseModel):
+    name: ReqStr | None = Field(default=None, max_length=64)
+    is_active: Literal[0, 1] | None = None
 
 
 class CategoryOut(BaseModel):
@@ -91,14 +106,14 @@ class CategoryOut(BaseModel):
 
 @categories_router.get("", response_model=list[CategoryOut])
 def list_categories(
-    is_active: int | None = 1,
+    include_inactive: bool = False,
     db: Session = Depends(get_db),
     _: CurrentUser = Depends(get_current_user),
 ) -> list[CategoryOut]:
     q = db.query(Category)
-    if is_active is not None:
-        q = q.filter(Category.is_active == is_active)
-    return [CategoryOut.model_validate(c) for c in q.order_by(Category.name).all()]
+    if not include_inactive:
+        q = q.filter(Category.is_active == 1)
+    return [CategoryOut.model_validate(v) for v in q.order_by(Category.is_active.desc(), Category.name).all()]
 
 
 @categories_router.post("", response_model=CategoryOut, status_code=201)
@@ -114,7 +129,7 @@ def create_category(body: CategoryIn, db: Session = Depends(get_db), _: CurrentU
 def deactivate_category(cid: int, db: Session = Depends(get_db), _: CurrentUser = Depends(require_admin)) -> None:
     c = db.get(Category, cid)
     if not c:
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, "見つかりません")
     c.is_active = 0
     db.commit()
 
@@ -124,7 +139,7 @@ departments_router = APIRouter(prefix="/departments", tags=["departments"])
 
 
 class DepartmentIn(BaseModel):
-    name: str
+    name: ReqStr = Field(max_length=64)
 
 
 class DepartmentOut(BaseModel):
@@ -136,14 +151,14 @@ class DepartmentOut(BaseModel):
 
 @departments_router.get("", response_model=list[DepartmentOut])
 def list_departments(
-    is_active: int | None = 1,
+    include_inactive: bool = False,
     db: Session = Depends(get_db),
     _: CurrentUser = Depends(get_current_user),
 ) -> list[DepartmentOut]:
     q = db.query(Department)
-    if is_active is not None:
-        q = q.filter(Department.is_active == is_active)
-    return [DepartmentOut.model_validate(d) for d in q.order_by(Department.name).all()]
+    if not include_inactive:
+        q = q.filter(Department.is_active == 1)
+    return [DepartmentOut.model_validate(v) for v in q.order_by(Department.is_active.desc(), Department.name).all()]
 
 
 @departments_router.post("", response_model=DepartmentOut, status_code=201)
@@ -159,6 +174,36 @@ def create_department(body: DepartmentIn, db: Session = Depends(get_db), _: Curr
 def deactivate_department(did: int, db: Session = Depends(get_db), _: CurrentUser = Depends(require_admin)) -> None:
     d = db.get(Department, did)
     if not d:
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, "見つかりません")
     d.is_active = 0
     db.commit()
+
+
+@categories_router.patch("/{cid}", response_model=CategoryOut)
+def update_category(cid: int, body: MasterUpdate, db: Session = Depends(get_db), _: CurrentUser = Depends(require_admin)) -> CategoryOut:
+    c = db.get(Category, cid)
+    if not c:
+        raise HTTPException(404, "カテゴリが見つかりません")
+    if body.name and body.name != c.name:
+        db.query(Item).filter(Item.category == c.name).update({"category": body.name}, synchronize_session=False)
+        c.name = body.name
+    if body.is_active is not None:
+        c.is_active = body.is_active
+    db.commit()
+    db.refresh(c)
+    return CategoryOut.model_validate(c)
+
+
+@departments_router.patch("/{did}", response_model=DepartmentOut)
+def update_department(did: int, body: MasterUpdate, db: Session = Depends(get_db), _: CurrentUser = Depends(require_admin)) -> DepartmentOut:
+    d = db.get(Department, did)
+    if not d:
+        raise HTTPException(404, "部署が見つかりません")
+    if body.name and body.name != d.name:
+        db.query(User).filter(User.department_id == d.id).update({"department": body.name}, synchronize_session=False)
+        d.name = body.name
+    if body.is_active is not None:
+        d.is_active = body.is_active
+    db.commit()
+    db.refresh(d)
+    return DepartmentOut.model_validate(d)

@@ -3,35 +3,43 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.db import get_db
+from app.errors import GENERIC_ERROR_MESSAGE, integrity_error_handler, validation_error_handler
 from app.middleware.security import SecurityHeadersMiddleware
-from app.routers import adjust as adjust_router
-from app.routers import ai as ai_router
-from app.routers import alerts as alerts_router
-from app.routers import approvals as approvals_router
-from app.routers import auth as auth_router
-from app.routers import categories as categories_router
+from app.routers import (
+    adjust,
+    ai,
+    alerts,
+    approvals,
+    auth,
+    disposal_requests,
+    history,
+    inbound,
+    inventory,
+    items,
+    maintenance,
+    orders,
+    outbound,
+    purchase_requests,
+    stats,
+    stocktake,
+    users,
+    vendors,
+)
 from app.routers import demo as demo_router
-from app.routers import departments as departments_router
-from app.routers import disposal_requests as dr_router
-from app.routers import history as history_router
-from app.routers import inbound as inbound_router
-from app.routers import inventory as inventory_router
-from app.routers import items as items_router
-from app.routers import maintenance as maintenance_router
-from app.routers import orders as orders_router
-from app.routers import outbound as outbound_router
-from app.routers import purchase_requests as pr_router
-from app.routers import stats as stats_router
-from app.routers import stocktake as stocktake_router
-from app.routers import users as users_router
-from app.routers import vendors as vendors_router
+
+__all__ = ["app", "GENERIC_ERROR_MESSAGE"]
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -41,15 +49,16 @@ log = logging.getLogger("app")
 
 app = FastAPI(
     title="在庫管理 API",
-    version="0.1.0",
+    version="0.2.0",
     docs_url="/docs" if not settings.is_production else None,
     redoc_url=None,
-    openapi_url="/openapi.json",
+    openapi_url="/openapi.json" if not settings.is_production else None,
 )
 
-# Rate limiter (from auth router)
-app.state.limiter = auth_router.limiter
+app.state.limiter = auth.limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RequestValidationError, validation_error_handler)
+app.add_exception_handler(IntegrityError, integrity_error_handler)
 
 # CORS — explicit allow list, credentials required for cookie auth
 app.add_middleware(
@@ -59,41 +68,38 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
-
 app.add_middleware(SecurityHeadersMiddleware)
 
 
 @app.get("/healthz", tags=["meta"])
 def healthz() -> dict:
+    """生存確認（プロセスが応答するか）。Render の healthCheckPath に使う。"""
     return {"ok": True, "env": settings.app_env}
+
+
+@app.get("/readyz", tags=["meta"])
+def readyz(db: Session = Depends(get_db)) -> JSONResponse:
+    """DB まで含めて使える状態か（E-05）。"""
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:  # noqa: BLE001
+        log.exception("readyz: DB check failed")
+        return JSONResponse(status_code=503, content={"ok": False, "db": "error"})
+    return JSONResponse(content={"ok": True, "db": "ok"})
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     log.exception("Unhandled exception on %s %s", request.method, request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+    return JSONResponse(status_code=500, content={"detail": GENERIC_ERROR_MESSAGE})
 
 
-# Routers
-app.include_router(auth_router.router)
-app.include_router(items_router.router)
-app.include_router(inventory_router.router)
-app.include_router(history_router.router)
-app.include_router(alerts_router.router)
-app.include_router(outbound_router.router)
-app.include_router(inbound_router.router)
-app.include_router(adjust_router.router)
-app.include_router(pr_router.router)
-app.include_router(pr_router.candidates_router)
-app.include_router(dr_router.router)
-app.include_router(approvals_router.router)
-app.include_router(vendors_router.router)
-app.include_router(categories_router.router)
-app.include_router(departments_router.router)
-app.include_router(users_router.router)
-app.include_router(stats_router.router)
-app.include_router(stocktake_router.router)
-app.include_router(ai_router.router)
-app.include_router(maintenance_router.router)
-app.include_router(demo_router.router)
-app.include_router(orders_router.router)
+for module in (
+    auth, items, inventory, history, alerts, outbound, inbound, adjust, purchase_requests,
+    disposal_requests, approvals, users, stats, stocktake, ai, maintenance, demo_router, orders,
+):
+    app.include_router(module.router)
+app.include_router(purchase_requests.candidates_router)
+app.include_router(vendors.vendors_router)
+app.include_router(vendors.categories_router)
+app.include_router(vendors.departments_router)

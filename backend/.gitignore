@@ -17,3 +17,6 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# E2E テストの一時 DB
+e2e.db*

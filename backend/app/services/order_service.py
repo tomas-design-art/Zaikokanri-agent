@@ -20,10 +20,15 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import Item, PurchaseRequest, User
+from app.utils.datetime import jst_today
+from app.utils.xlsx import write_cell
 
-FONT_NAME = "NotoSansJP"
-FONT_PATH = Path(__file__).resolve().parent.parent.parent / "fonts" / "NotoSansJP-Regular.ttf"
+FONT_NAME = settings.font_name
+FONT_PATH: Path = settings.font_path
+# 発注書を出せる状態（発注済からの出し直しも可：C-06）
+ORDERABLE_STATUSES = ("APPROVED", "ORDERED")
 
 
 def _format_currency(yen: float | None) -> str:
@@ -39,7 +44,7 @@ def build_payloads(db: Session, request_ids: list[int]) -> list[dict[str, Any]]:
         .join(Item, PurchaseRequest.item_id == Item.id)
         .outerjoin(User, PurchaseRequest.requested_by_user_id == User.id)
         .where(PurchaseRequest.id.in_(request_ids))
-        .where(PurchaseRequest.status == "APPROVED")
+        .where(PurchaseRequest.status.in_(ORDERABLE_STATUSES))
         .where(PurchaseRequest.deleted_at.is_(None))
         .order_by(Item.vendor_name, Item.item_name)
     ).all()
@@ -64,7 +69,7 @@ def build_payloads(db: Session, request_ids: list[int]) -> list[dict[str, Any]]:
             }
         )
 
-    ordered_at = datetime.now().strftime("%Y-%m-%d")
+    ordered_at = jst_today().isoformat()
     payloads: list[dict[str, Any]] = []
     for vendor, items in vendor_groups.items():
         department = items[0]["department"]
@@ -100,8 +105,8 @@ def render_email_text(payload: dict[str, Any]) -> str:
     total = payload.get("total")
     try:
         today = datetime.strptime(ordered_at, "%Y-%m-%d").strftime("%Y年%m月%d日")
-    except Exception:
-        today = datetime.now().strftime("%Y年%m月%d日")
+    except ValueError:
+        today = jst_today().strftime("%Y年%m月%d日")
 
     lines = []
     for idx, it in enumerate(items, 1):
@@ -134,6 +139,11 @@ def render_email_text(payload: dict[str, Any]) -> str:
 
 def render_pdf(payload: dict[str, Any]) -> bytes:
     from fpdf import FPDF
+    from fpdf.enums import XPos, YPos
+
+    def line(w: float, h: float, txt: str, border: int = 0, align: str = "L", *, newline: bool = False) -> None:
+        nx, ny = (XPos.LMARGIN, YPos.NEXT) if newline else (XPos.RIGHT, YPos.TOP)
+        pdf.cell(w, h, txt, border=border, align=align, new_x=nx, new_y=ny)
 
     if not FONT_PATH.exists():
         raise FileNotFoundError(f"日本語フォントが見つかりません: {FONT_PATH}")
@@ -142,7 +152,7 @@ def render_pdf(payload: dict[str, Any]) -> bytes:
     pdf.add_font(FONT_NAME, "", str(FONT_PATH))
     pdf.add_page()
     pdf.set_font(FONT_NAME, "", 16)
-    pdf.cell(0, 10, "発注書", 0, 1, "C")
+    line(0, 10, "発注書", align="C", newline=True)
     pdf.ln(3)
 
     vendor = payload.get("vendor", "")
@@ -152,17 +162,16 @@ def render_pdf(payload: dict[str, Any]) -> bytes:
     total = payload.get("total")
 
     pdf.set_font(FONT_NAME, "", 10)
-    pdf.cell(0, 6, f"発注日: {ordered_at}", 0, 1)
-    pdf.cell(0, 6, f"発注先: {vendor}", 0, 1)
-    pdf.cell(0, 6, f"発注元: {requester.get('department', '')} / {requester.get('name', '')}", 0, 1)
+    line(0, 6, f"発注日: {ordered_at}", newline=True)
+    line(0, 6, f"発注先: {vendor}", newline=True)
+    line(0, 6, f"発注元: {requester.get('department', '')} / {requester.get('name', '')}", newline=True)
     pdf.ln(5)
 
     pdf.set_font(FONT_NAME, "", 9)
-    pdf.cell(85, 8, "品目名（コード）", 1, 0, "C")
-    pdf.cell(25, 8, "数量", 1, 0, "C")
-    pdf.cell(35, 8, "単価", 1, 0, "C")
-    pdf.cell(35, 8, "金額", 1, 0, "C")
-    pdf.ln()
+    line(85, 8, "品目名（コード）", 1, "C")
+    line(25, 8, "数量", 1, "C")
+    line(35, 8, "単価", 1, "C")
+    line(35, 8, "金額", 1, "C", newline=True)
 
     pdf.set_font(FONT_NAME, "", 8)
     for it in items:
@@ -172,21 +181,20 @@ def render_pdf(payload: dict[str, Any]) -> bytes:
         qty = it.get("quantity", 0)
         up = it.get("unit_price")
         sub = it.get("subtotal")
-        pdf.cell(85, 8, display, 1)
-        pdf.cell(25, 8, str(qty), 1, 0, "C")
+        line(85, 8, display, 1)
+        line(25, 8, str(qty), 1, "C")
         if up is not None and sub is not None:
-            pdf.cell(35, 8, f"¥ {up:,.0f}", 1, 0, "R")
-            pdf.cell(35, 8, f"¥ {sub:,.0f}", 1, 0, "R")
+            line(35, 8, f"¥ {up:,.0f}", 1, "R")
+            line(35, 8, f"¥ {sub:,.0f}", 1, "R", newline=True)
         else:
-            pdf.cell(35, 8, "要見積", 1, 0, "C")
-            pdf.cell(35, 8, "-", 1, 0, "C")
-        pdf.ln()
+            line(35, 8, "要見積", 1, "C")
+            line(35, 8, "-", 1, "C", newline=True)
 
     pdf.set_font(FONT_NAME, "", 9)
-    pdf.cell(110, 8, "", 0)
-    pdf.cell(35, 8, "合計:", 1, 0, "C")
-    pdf.cell(35, 8, "要見積" if total is None else f"¥ {total:,.0f}", 1, 0, "R" if total is not None else "C")
-    pdf.ln(10)
+    line(110, 8, "")
+    line(35, 8, "合計:", 1, "C")
+    line(35, 8, "要見積" if total is None else f"¥ {total:,.0f}", 1, "R" if total is not None else "C", newline=True)
+    pdf.ln(2)
     pdf.set_font(FONT_NAME, "", 8)
     pdf.multi_cell(0, 5, "備考: 単価未設定の品目が含まれています。" if payload.get("has_unpriced_items") else "備考: 詳細は送信メールをご確認ください。")
     return bytes(pdf.output())
@@ -215,10 +223,13 @@ def render_excel(payloads: list[dict[str, Any]]) -> bytes:
         ws.merge_cells("A1:G1")
         ws["A1"].alignment = Alignment(horizontal="center")
 
-        ws["A3"], ws["B3"] = "発注日:", payload.get("ordered_at", "")
-        ws["A4"], ws["B4"] = "業者:", vendor
-        ws["A5"], ws["B5"] = "部署:", payload.get("requester", {}).get("department", "")
-        ws["A6"], ws["B6"] = "発注者:", payload.get("requester", {}).get("name", "")
+        for r, (label, value) in enumerate(
+            [("発注日:", payload.get("ordered_at", "")), ("業者:", vendor),
+             ("部署:", payload.get("requester", {}).get("department", "")), ("発注者:", payload.get("requester", {}).get("name", ""))],
+            start=3,
+        ):
+            ws.cell(row=r, column=1, value=label)
+            write_cell(ws, r, 2, value)
 
         headers = ["品目名", "品目コード", "業者品番", "数量", "単価", "金額", "備考"]
         for col, h in enumerate(headers, 1):
@@ -229,13 +240,14 @@ def render_excel(payloads: list[dict[str, Any]]) -> bytes:
 
         row = 9
         for it in payload.get("items", []):
-            ws.cell(row=row, column=1, value=it.get("item_name", ""))
-            ws.cell(row=row, column=2, value=it.get("item_code", ""))
-            ws.cell(row=row, column=3, value=it.get("vendor_part_no", ""))
-            ws.cell(row=row, column=4, value=it.get("quantity", 0))
-            ws.cell(row=row, column=5, value=it.get("unit_price") if it.get("unit_price") is not None else "未設定")
-            ws.cell(row=row, column=6, value=it.get("subtotal") if it.get("subtotal") is not None else "要見積")
-            ws.cell(row=row, column=7, value=it.get("notes", ""))
+            values = [
+                it.get("item_name", ""), it.get("item_code", ""), it.get("vendor_part_no", ""), it.get("quantity", 0),
+                it.get("unit_price") if it.get("unit_price") is not None else "未設定",
+                it.get("subtotal") if it.get("subtotal") is not None else "要見積",
+                it.get("notes", ""),
+            ]
+            for col, value in enumerate(values, 1):
+                write_cell(ws, row, col, value)
             row += 1
 
         total = payload.get("total")
