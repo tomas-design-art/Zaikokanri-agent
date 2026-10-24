@@ -9,6 +9,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user, require_admin, require_user
@@ -161,13 +162,21 @@ def update_pr(pr_id: int, body: PRUpdate, db: Session = Depends(get_db), user: C
             raise HTTPException(400, "承認された後の申請は編集できません")
     elif pr.status not in DECIDABLE:
         raise HTTPException(400, "発注済・受領済・却下済の申請は変更できません")
-    if data.get("status") in {"APPROVED", "REJECTED"}:
-        pr.approved_by = user.id
-        pr.approved_at = jst_now()
-    for k, v in data.items():
-        if v is None and k in {"requested_qty", "priority", "status"}:
-            continue
-        setattr(pr, k, v)
+    values = {k: v for k, v in data.items() if not (v is None and k in {"requested_qty", "priority", "status"})}
+    if values.get("status") in {"APPROVED", "REJECTED"}:
+        values |= {"approved_by": user.id, "approved_at": jst_now()}
+    if values:
+        # 読んだ時点の状態のままのときだけ更新する（申請者の編集と管理者の承認が同時でも食い違わない：H-06）
+        allowed_now = DECIDABLE if user.is_admin else EDITABLE_BY_REQUESTER
+        res = db.execute(
+            update(PurchaseRequest)
+            .where(PurchaseRequest.id == pr_id, PurchaseRequest.status.in_(allowed_now))
+            .values(**values, updated_at=jst_now())
+            .execution_options(synchronize_session=False)
+        )
+        if res.rowcount != 1:
+            db.rollback()
+            raise HTTPException(409, "ほかの人が先にこの申請を処理しました。画面を更新してください")
     db.commit()
     return _one(db, pr_id)
 

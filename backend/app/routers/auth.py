@@ -80,7 +80,8 @@ def login(request: Request, response: Response, body: LoginRequest, db: Session 
     ip = get_remote_address(request)
     if not user or not user.is_active:
         verify_password(body.password, _DUMMY_HASH)  # 応答時間でユーザーの有無を悟らせない（G-04）
-        security_event("login_failed", user=username, reason="unknown_or_inactive", ip=ip)
+        # ユーザー名の欄にパスワードを打ち間違えることがあるので、存在しない名前は記録に残さない（H-13）
+        security_event("login_failed", user=username if user else f"(不明・{len(username)}文字)", reason="unknown_or_inactive", ip=ip)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=LOGIN_FAILED)
     now = jst_now()
     if user.locked_until and user.locked_until > now:

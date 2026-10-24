@@ -34,6 +34,8 @@ export default defineConfig({
         timezoneId: "Asia/Tokyo",
         trace: "retain-on-failure",
         screenshot: "only-on-failure",
+        // E2E_VIDEO=1 で全テストを録画（中身を目で確かめたいとき）。普段は失敗したものだけ残す
+        video: process.env.E2E_VIDEO ? "on" : "retain-on-failure",
     },
     projects: [
         { name: "setup", testMatch: /auth\.setup\.ts/ },

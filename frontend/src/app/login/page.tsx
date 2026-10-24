@@ -12,8 +12,16 @@ import { Field } from "@/components/ui";
 // 初期管理者のヒントは開発環境でだけ出す（A-03）
 const SHOW_DEMO_HINT = process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_SHOW_DEMO_HINT === "true";
 
+/** ログイン後の戻り先。URL として解釈して、同じサイトのパスだけを受け付ける（`/\evil` や `/%09/evil` も外へ出さない：G-08） */
 function safeNext(next: string | null): string {
-    return next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/login") ? next : "/dashboard";
+    if (!next || !next.startsWith("/")) return "/dashboard";
+    try {
+        const url = new URL(next, window.location.origin);
+        if (url.origin !== window.location.origin || url.pathname.startsWith("/login")) return "/dashboard";
+        return url.pathname + url.search + url.hash;
+    } catch {
+        return "/dashboard";
+    }
 }
 
 function LoginForm() {

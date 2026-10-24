@@ -7,7 +7,6 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -56,7 +55,11 @@ app = FastAPI(
 )
 
 app.state.limiter = auth.limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+async def rate_limit_handler(_request, _exc) -> JSONResponse:  # noqa: ANN001
+    return JSONResponse(status_code=429, content={"detail": "ログインの試行が多すぎます。1分ほど待ってからもう一度お試しください"})
+
+
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(IntegrityError, integrity_error_handler)
 

@@ -40,6 +40,10 @@ def test_F03_upgrade_head_creates_every_model_column(fresh_url):
         cols = {c["name"] for c in insp.get_columns(table.name)}
         missing += [f"{table.name}.{c.name}" for c in table.columns if c.name not in cols]
     assert missing == [], f"マイグレーションに無い列: {missing}"
+    # H-11：0003 で足した列は NOT NULL（モデルと同じ）
+    for table, col in [("items", "unit"), ("users", "must_change_password"), ("users", "failed_login_count"), ("users", "token_version")]:
+        info = next(c for c in insp.get_columns(table) if c["name"] == col)
+        assert info["nullable"] is False, f"{table}.{col} が NULL 可"
     eng.dispose()
 
 
@@ -71,7 +75,7 @@ def test_B01_A03_data_migration(fresh_url):
         conn.execute(
             text(
                 "INSERT INTO items (item_name, category, expiry_date, item_code, reorder_point, unit_price, is_active) "
-                "VALUES ('古い物品', '消耗品', '', '', 25, NULL, 1)"
+                "VALUES ('古い物品', '消耗品', '', '', 25, NULL, 1), ('古い期限', '消耗品', '2026/10/1', NULL, NULL, 0, 1)"
             )
         )
         item_id = conn.execute(text("SELECT id FROM items WHERE item_name='古い物品'")).scalar_one()
@@ -86,6 +90,8 @@ def test_B01_A03_data_migration(fresh_url):
         ).one()
         assert row.expiry_date is None and row.item_code is None
         assert row.unit == "個"
+        # H-10：古い書き方の期限は YYYY-MM-DD にそろう
+        assert conn.execute(text("SELECT expiry_date FROM items WHERE item_name='古い期限'")).scalar_one() == "2026-10-01"
         assert row.unit_price == 0
         assert conn.execute(text("SELECT threshold FROM inventory")).scalar_one() == 25
         # 初期管理者（admin/admin123）はパスワード変更が必須になる

@@ -95,6 +95,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         );
     }
 
+    // 権限のない画面を URL で直接開いたときは中身を出さない（メニューに出さないだけでは足りない）
+    const required = NAV.flatMap((g) => g.items).find((n) => pathname === n.href || pathname.startsWith(n.href + "/"))?.role;
+    const forbidden = !!required && !hasRole(user, required);
+
     const nav = (
         <nav className="flex-1 overflow-y-auto py-2" aria-label="メインメニュー">
             {NAV.map((g) => {
@@ -154,7 +158,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 </button>
             </aside>
             <main className="min-w-0 flex-1">
-                <div className="mx-auto max-w-screen-2xl p-4 md:p-6">{children}</div>
+                <div className="mx-auto max-w-screen-2xl p-4 md:p-6">
+                    {forbidden ? (
+                        <div role="alert" className="card mx-auto mt-10 max-w-md space-y-2 p-6 text-center">
+                            <h1 className="text-lg font-bold">この画面を使う権限がありません</h1>
+                            <p className="text-sm text-slate-600">必要な場合は管理者に依頼してください。</p>
+                            <Link href="/dashboard" className="btn-secondary">ダッシュボードへ</Link>
+                        </div>
+                    ) : children}
+                </div>
             </main>
         </div>
     );

@@ -79,6 +79,8 @@ class ApplyResult(BaseModel):
     applied: int
     adjusted: int
     uncounted: int
+    skipped: list[str] = []  # 数えた後に無効にした物品（反映しなかった）
+    clamped: list[str] = []  # 在庫が0未満になるため0で止めた物品
 
 
 def _session_out(db: Session, s: StocktakeSession) -> SessionOut:

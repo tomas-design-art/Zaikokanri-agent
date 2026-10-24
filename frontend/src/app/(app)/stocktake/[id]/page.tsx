@@ -27,11 +27,13 @@ function CountInput({ rec, editable, listKey, onSaved, inputRef, onEnter }: {
     const [text, setText] = useState(rec.actual_qty === null ? "" : String(rec.actual_qty));
     const [state, setState] = useState<SaveState>(rec.actual_qty === null ? "idle" : "saved");
     const [saved, setSaved] = useState<string>(text);
+    const inFlight = useRef<string | null>(null);
     const invalid = text.trim() !== "" && parseCount(text) === null;
 
     const save = useMutation({
         mutationFn: (actual: number | null) => apiPatch<StocktakeRecord>(`/stocktake/records/${rec.id}`, { actual_qty: actual }),
         onMutate: () => setState("saving"),
+        onSettled: () => { inFlight.current = null; },
         onSuccess: (updated, actual) => {
             setSaved(actual === null ? "" : String(actual));
             setState(actual === null ? "idle" : "saved");
@@ -42,7 +44,9 @@ function CountInput({ rec, editable, listKey, onSaved, inputRef, onEnter }: {
     });
 
     function commit() {
-        if (invalid || text.trim() === saved) return;
+        // Enter で保存した直後に欄を離れても、同じ値をもう一度送らない（送信中の値を覚えておく）
+        if (invalid || text.trim() === saved || inFlight.current === text.trim()) return;
+        inFlight.current = text.trim();
         save.mutate(text.trim() === "" ? null : parseCount(text));
     }
 
@@ -92,8 +96,15 @@ export default function StocktakeDetailPage() {
         onError: (e) => toast.error(errorText(e)),
     });
     const apply = useMutation({
-        mutationFn: () => apiPost<{ applied: number; adjusted: number; uncounted: number }>(`/stocktake/sessions/${sid}/apply`),
-        onSuccess: (r) => { toast.success(`確定しました：${r.adjusted}品目の在庫を修正（未カウント ${r.uncounted}品目は変更なし）`); setConfirm(null); refreshAll(); },
+        mutationFn: () => apiPost<{ applied: number; adjusted: number; uncounted: number; skipped: string[]; clamped: string[] }>(`/stocktake/sessions/${sid}/apply`),
+        onSuccess: (r) => {
+            toast.success(`確定しました：${r.adjusted}品目の在庫を修正（未カウント ${r.uncounted}品目は変更なし）`);
+            // 止めずに知らせる：無効にした物品は反映しなかった／在庫が0未満になるので0で止めた
+            if (r.skipped.length) toast.warning(`無効になっていた物品は反映しませんでした：${r.skipped.join("、")}`, { duration: 20_000 });
+            if (r.clamped.length) toast.warning(`数えた後に出庫があり在庫が足りないため、0で止めました：${r.clamped.join("、")}`, { duration: 20_000 });
+            setConfirm(null);
+            refreshAll();
+        },
         onError: (e) => { toast.error(errorText(e)); refreshAll(); },
     });
     const cancel = useMutation({

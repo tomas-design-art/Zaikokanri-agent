@@ -34,7 +34,7 @@ def main() -> None:
         }
     )
     subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=BACKEND, check=True)
-    subprocess.run([sys.executable, "scripts/seed_demo.py"], cwd=BACKEND, check=True)
+    subprocess.run([sys.executable, "scripts/seed_demo.py", "--reset-users"], cwd=BACKEND, check=True)
 
     sys.path.insert(0, str(BACKEND))
     import uvicorn

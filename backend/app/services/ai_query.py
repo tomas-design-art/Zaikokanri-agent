@@ -29,6 +29,19 @@ _FORBIDDEN = re.compile(
 )
 _SYSTEM = re.compile(r"(sqlite_|pg_|information_schema|u&)", re.IGNORECASE)
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_CALL = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+# 使ってよい関数（集計・文字・日付だけ）。文字列から SQL を組み立てて実行する関数（query_to_xml 等）は通さない（H-02）
+ALLOWED_FUNCTIONS = {
+    "count", "sum", "avg", "min", "max", "coalesce", "ifnull", "nullif", "lower", "upper", "length", "substr",
+    "substring", "trim", "round", "abs", "cast", "date", "datetime", "strftime", "julianday", "date_trunc",
+    "to_char", "extract", "now", "greatest", "least",
+}
+# 「名前(」の形になるが関数ではない SQL の語
+_SQL_WORDS = {
+    "select", "from", "where", "and", "or", "not", "in", "exists", "as", "on", "join", "using", "over", "filter",
+    "values", "when", "then", "else", "case", "by", "with", "having", "union", "all", "any", "is", "like",
+    "distinct", "limit", "offset", "left", "right", "inner", "outer", "cross", "partition", "between",
+}
 
 
 def _blocked_tables() -> set[str]:
@@ -43,7 +56,10 @@ def is_safe_sql(sql: str) -> bool:
     if _FORBIDDEN.search(sql) or _SYSTEM.search(sql):
         return False
     words = {w.lower() for w in _WORD.findall(sql)}
-    return not (words & _blocked_tables())
+    if words & _blocked_tables():
+        return False
+    calls = {c.lower() for c in _CALL.findall(sql.replace('"', ""))} - _SQL_WORDS
+    return calls <= ALLOWED_FUNCTIONS
 
 
 def run_readonly_query(db: Session, sql: str, *, limit: int = MAX_ROWS) -> list[dict[str, Any]]:

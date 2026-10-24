@@ -20,7 +20,7 @@ class InboundCreate(BaseModel):
     item_id: int
     quantity: int = Field(ge=1)
     vendor_name: OptStr = Field(default=None, max_length=128)
-    unit_price: float | None = Field(default=None, ge=0)
+    unit_price: float | None = Field(default=None, ge=0, le=100_000_000, allow_inf_nan=False)
     note: OptStr = Field(default=None, max_length=512)
 
 

@@ -21,7 +21,8 @@ test("G-06 全ページにセキュリティヘッダーが付く", async ({ pag
 });
 
 test("G-08 ログイン後の戻り先に外部のサイトは使わない", async ({ page }) => {
-    for (const next of ["//evil.example/login", "https://evil.example/"]) {
+    // "/\evil" は URL の解釈で "//evil"（外部）になる。"/<タブ>/evil" はタブが取り除かれて同じく外部になる
+    for (const next of ["//evil.example/login", "https://evil.example/", "/\\evil.example/", "/\t/evil.example/"]) {
         await page.context().clearCookies();
         await page.goto(`/login?next=${encodeURIComponent(next)}`);
         await page.getByLabel("ユーザー名").fill("U001");

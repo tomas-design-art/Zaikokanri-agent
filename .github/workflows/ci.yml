@@ -6,8 +6,8 @@ on:
   pull_request:
     branches: [main, staging, develop]
 
-# 方針（開発憲章 5章）：lint・型・テスト・E2E の失敗は止める。
-# 依存の監査ツール（pip-audit / npm audit）の不調・指摘は止めない（結果はログで確認する）。
+# 方針（開発憲章 5章）：lint・型・テスト・E2E の失敗、脆弱性・秘密情報の検出は止める。
+# 監査ツールそのものの不調（ネットワーク等）だけは止めない。
 
 jobs:
   backend:
@@ -25,7 +25,6 @@ jobs:
 
       - name: Install dependencies (hashed lock, 7-day cutoff)
         run: |
-          python -m pip install --upgrade pip
           pip install --require-hashes -r requirements-dev.lock
 
       - name: Ruff (lint)
@@ -36,9 +35,31 @@ jobs:
           JWT_SECRET: ci-test-secret-0123456789abcdef0123456789
         run: pytest -q
 
-      - name: pip-audit (deps vuln scan, non-blocking)
-        continue-on-error: true
-        run: pip-audit -r requirements.lock --require-hashes --disable-pip
+      - name: Lock files really follow the 7-day rule
+        # ロックを同じ条件で作り直して「部品名==版」を突き合わせる。公開7日未満の版が手で入っていれば差が出て止まる（uv はロックで固定）
+        shell: bash
+        run: |
+          for f in requirements.lock requirements-dev.lock; do
+            extra=""; [ "$f" = requirements-dev.lock ] && extra="--extra dev"
+            cp "$f" "/tmp/$f"
+            uv pip compile pyproject.toml --universal --generate-hashes --exclude-newer "7 days" $extra -o "/tmp/$f" -q
+            pins() { grep -E '^[a-z0-9][a-z0-9._-]*==' "$1" | sed 's/ .*//' | sort; }
+            diff <(pins "$f") <(pins "/tmp/$f") || { echo "::error::$f が7日ルールの作り直しと一致しません"; exit 1; }
+          done
+
+      - name: pip-audit (vulnerabilities block, tool failure does not)
+        # 脆弱性が見つかったら止める。道具そのものの不調（ネットワーク等）では止めない（開発憲章 5章）
+        run: |
+          pip-audit -r requirements.lock --require-hashes --disable-pip -f json -o audit.json || true
+          python - <<'PY'
+          import json, pathlib, sys
+          p = pathlib.Path("audit.json")
+          if not p.exists() or not p.read_text().strip():
+              print("::warning::pip-audit が結果を出せませんでした（道具の不調）。止めずに進めます"); sys.exit(0)
+          vulns = [(d["name"], d["version"], v["id"]) for d in json.loads(p.read_text())["dependencies"] for v in d.get("vulns", [])]
+          for v in vulns: print("::error::脆弱性", *v)
+          sys.exit(1 if vulns else 0)
+          PY
 
   backend-postgres:
     # 本番と同じ PostgreSQL でマイグレーションと全テストを流す（SQLite では見えない不具合を捕まえる）
@@ -65,7 +86,6 @@ jobs:
 
       - name: Install dependencies (hashed lock, 7-day cutoff)
         run: |
-          python -m pip install --upgrade pip
           pip install --require-hashes -r requirements-dev.lock
 
       - name: Alembic upgrade / downgrade / upgrade on an empty database
@@ -113,9 +133,10 @@ jobs:
           NEXT_PUBLIC_API_BASE: http://localhost:8000
         run: npm run build
 
-      - name: npm audit (prod deps, non-blocking)
-        continue-on-error: true
-        run: npm audit --omit=dev
+      - name: npm audit (prod deps; vulnerabilities block, tool failure does not)
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          node -e "const fs=require('fs');let j;try{j=JSON.parse(fs.readFileSync('audit.json','utf8'))}catch{console.log('::warning::npm audit が結果を出せませんでした（道具の不調）');process.exit(0)}const n=(j.metadata&&j.metadata.vulnerabilities)||{};const bad=(n.high||0)+(n.critical||0)+(n.moderate||0);if(bad){console.log('::error::本番の依存に脆弱性',JSON.stringify(n));process.exit(1)}"
 
   e2e:
     name: E2E (Playwright)
@@ -131,7 +152,6 @@ jobs:
       - name: Install backend
         working-directory: backend
         run: |
-          python -m pip install --upgrade pip
           pip install --require-hashes -r requirements.lock
 
       - uses: actions/setup-node@v4
@@ -169,7 +189,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Gitleaks
+        # 秘密情報を見つけたら止める
         uses: gitleaks/gitleaks-action@v2
-        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

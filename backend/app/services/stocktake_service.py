@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 from sqlalchemy import case
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Inventory, Item, StocktakeRecord, StocktakeSession, User
@@ -69,7 +70,11 @@ def create_session(db: Session, *, name: str, note: str | None, category: str | 
         status=OPEN, created_by=user_id, created_at=jst_now(),
     )
     db.add(s)
-    db.flush()
+    try:
+        db.flush()  # 実施中は1つだけ、を DB の一意インデックスでも守る（同時に始めた場合：H-04）
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(409, "実施中の棚卸しがあります。完了または中止してから新しく作ってください") from e
     rows = _target_items(db, category).all()
     if not rows:
         raise HTTPException(400, "棚卸しの対象になる物品がありません")
@@ -120,6 +125,13 @@ def record_count(db: Session, rid: int, *, user_id: int, actual_qty=UNSET, note=
         r.status = "COUNTED"
     if note is not UNSET:
         r.note = note
+    db.flush()
+    # 書き込みの後で、まだ実施中かを確かめ直す（同時に確定・中止されていたら入れない：H-12）
+    current = (
+        db.query(StocktakeSession.status).filter(StocktakeSession.id == r.session_id).with_for_update(read=True).scalar()
+    )
+    if current != OPEN:
+        raise HTTPException(409, "この棚卸しは完了・中止されたため入力できません")
     return r
 
 
@@ -130,20 +142,29 @@ def apply_session(db: Session, sid: int, actor: Actor) -> dict[str, int]:
         raise HTTPException(404, "棚卸しが見つかりません")
     claim(db, StocktakeSession, sid, to_status=CLOSED, from_statuses=(OPEN,))
     adjusted = 0
+    skipped: list[str] = []  # 数えた後に無効にした物品（H-03）
+    clamped: list[str] = []  # 差異を足すと0未満になり、0で止めた物品（H-05）
     counted = db.query(StocktakeRecord).filter(StocktakeRecord.session_id == sid, StocktakeRecord.status == "COUNTED").all()
     for r in counted:
+        item = db.get(Item, r.item_id)
+        if not item or not item.is_active:
+            skipped.append(item.item_name if item else f"#{r.item_id}")
+            continue
         if r.diff_qty:
             res = apply_stocktake_diff(
                 db, actor, item_id=r.item_id, diff=r.diff_qty, session_id=sid,
                 note=f"棚卸し「{s.name}」（帳簿 {r.system_qty} → 実数 {r.actual_qty}）",
             )
             adjusted += 1 if res else 0
+            if (res.change if res else 0) != r.diff_qty:
+                clamped.append(item.item_name)
         r.status = "APPLIED"
         r.approved_by = actor.user_id
         r.approved_at = jst_now()
     uncounted = db.query(StocktakeRecord).filter(StocktakeRecord.session_id == sid, StocktakeRecord.actual_qty.is_(None)).count()
     s.closed_at = jst_now()
-    return {"applied": len(counted), "adjusted": adjusted, "uncounted": uncounted}
+    return {"applied": len(counted) - len(skipped), "adjusted": adjusted, "uncounted": uncounted,
+            "skipped": skipped, "clamped": clamped}
 
 
 def cancel_session(db: Session, sid: int) -> None:

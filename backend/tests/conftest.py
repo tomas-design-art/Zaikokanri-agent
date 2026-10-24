@@ -34,6 +34,8 @@ from app.models import Category, Department, Inventory, Item, User, Vendor  # no
 from app.routers.auth import limiter as _login_limiter  # noqa: E402
 
 PASSWORDS = {"admin": "admin123", "taro": "user1234", "guest": "guest123", "hanako": "user5678"}
+# bcrypt はわざと遅い。テストごとに作り直すと全体が数倍遅くなるので、最初に1回だけ作って使い回す
+_HASHES = {name: hash_password(pw) for name, pw in PASSWORDS.items()}
 
 
 @pytest.fixture(scope="session")
@@ -82,22 +84,22 @@ def db(engine) -> Iterator[Session]:
             Category(name="薬品"),
             Vendor(vendor_code="V001", vendor_name="テスト商事"),
             User(
-                username="admin", password_hash=hash_password(PASSWORDS["admin"]),
+                username="admin", password_hash=_HASHES["admin"],
                 display_name="管理者", user_role="ADMIN", department="検査科",
                 department_id=dept.id, is_active=1,
             ),
             User(
-                username="taro", password_hash=hash_password(PASSWORDS["taro"]),
+                username="taro", password_hash=_HASHES["taro"],
                 display_name="山田太郎", user_role="USER", department="検査科",
                 department_id=dept.id, is_active=1,
             ),
             User(
-                username="hanako", password_hash=hash_password(PASSWORDS["hanako"]),
+                username="hanako", password_hash=_HASHES["hanako"],
                 display_name="佐藤花子", user_role="USER", department="看護部",
                 department_id=dept2.id, is_active=1,
             ),
             User(
-                username="guest", password_hash=hash_password(PASSWORDS["guest"]),
+                username="guest", password_hash=_HASHES["guest"],
                 display_name="ゲスト", user_role="GUEST", department="看護部",
                 department_id=dept2.id, is_active=1,
             ),

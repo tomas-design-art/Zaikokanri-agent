@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -241,6 +242,11 @@ class PurchaseCandidate(Base):
 
 class StocktakeSession(Base):
     __tablename__ = "stocktake_sessions"
+    # 実施中（OPEN）は1つだけ（H-04）
+    __table_args__ = (
+        Index("uq_stocktake_one_open", "status", unique=True,
+              sqlite_where=text("status = 'OPEN'"), postgresql_where=text("status = 'OPEN'")),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     start_date: Mapped[str | None] = mapped_column(String(32))

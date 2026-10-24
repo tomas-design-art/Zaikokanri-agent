@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -119,7 +119,7 @@ def create_user(body: UserCreate, db: Session = Depends(get_db), me: CurrentUser
 
 @router.patch("/{uid}", response_model=UserOut)
 def update_user(
-    uid: int, body: UserUpdate, db: Session = Depends(get_db), me: CurrentUser = Depends(require_admin)
+    uid: int, body: UserUpdate, response: Response, db: Session = Depends(get_db), me: CurrentUser = Depends(require_admin)
 ) -> UserOut:
     u = db.get(User, uid)
     if not u:
@@ -149,6 +149,10 @@ def update_user(
             setattr(u, k, v)
     db.commit()
     db.refresh(u)
+    if u.id == me.id and body.password:
+        from app.routers.auth import _set_auth_cookies
+
+        _set_auth_cookies(response, u)  # 自分のパスワードを変えたときは今の画面を続けられるようにする（H-13）
     return _out(u)
 
 

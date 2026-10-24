@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import case, func, update
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, require_user
@@ -50,8 +51,18 @@ def receive_purchase(body: ReceiveRequest, db: Session = Depends(get_db), user: 
     except StockError as e:
         db.rollback()
         raise HTTPException(400, str(e)) from e
-    pr.received_qty = (pr.received_qty or 0) + body.received_qty
-    pr.received_at = jst_now()
-    pr.status = "RECEIVED" if pr.received_qty >= pr.requested_qty else "ORDERED"
+    # 残数を超えないときだけ受領数を足す（同時の受領で残数を超えない：H-01）
+    new_received = func.coalesce(PurchaseRequest.received_qty, 0) + body.received_qty
+    res = db.execute(
+        update(PurchaseRequest)
+        .where(PurchaseRequest.id == pr.id, PurchaseRequest.status.in_(("APPROVED", "ORDERED")),
+               new_received <= PurchaseRequest.requested_qty)
+        .values(received_qty=new_received, received_at=jst_now(),
+                status=case((new_received >= PurchaseRequest.requested_qty, "RECEIVED"), else_="ORDERED"))
+        .execution_options(synchronize_session=False)
+    )
+    if res.rowcount != 1:
+        db.rollback()
+        raise HTTPException(409, "ほかの人が先に受領しました。画面を更新してください")
     db.commit()
     return StockResultOut(**r.__dict__)

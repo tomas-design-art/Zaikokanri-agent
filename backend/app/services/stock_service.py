@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -68,8 +69,17 @@ def _record(
     vendor_name: str | None = None,
     unit_price: float | None = None,
 ) -> StockResult:
-    inv.quantity += signed_change
-    inv.updated_at = jst_now()
+    # 「足りるときだけ増減する」を1文の条件付き更新で行う（H-01）。
+    # SQLite では行ロックが効かないため、読んだ値から計算して書き戻すと、同時の操作で片方の更新が消える
+    res = db.execute(
+        update(Inventory)
+        .where(Inventory.id == inv.id, Inventory.quantity + signed_change >= 0)
+        .values(quantity=Inventory.quantity + signed_change, updated_at=jst_now())
+        .execution_options(synchronize_session=False)
+    )
+    if res.rowcount != 1:
+        raise StockError(f"「{item.item_name}」の在庫が足りません（ほかの人の操作で在庫が変わりました。画面を更新してください）")
+    db.refresh(inv)
     hist = InventoryHistory(
         item_id=item.id,
         change_type=change_type,
@@ -178,7 +188,15 @@ def process_undo(db: Session, actor: Actor, h: InventoryHistory) -> StockResult:
         signed, reverse = -h.quantity, "OUT"
     else:
         signed, reverse = h.quantity, "IN"
-    h.status = "REJECTED"
+    # 「確定のときだけ取消済にする」を1文で行い、同時の取消を1回に限る（H-07）
+    res = db.execute(
+        update(InventoryHistory)
+        .where(InventoryHistory.id == h.id, InventoryHistory.status == "CONFIRMED")
+        .values(status="REJECTED")
+        .execution_options(synchronize_session=False)
+    )
+    if res.rowcount != 1:
+        raise StockError("この履歴はすでに取り消されています")
     return _record(
         db, inv, item, actor, change_type=reverse, signed_change=signed, history_qty=h.quantity,
         note=f"取消（履歴 #{h.id}）", ref=("UNDO", h.id),

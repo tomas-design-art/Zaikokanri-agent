@@ -29,7 +29,7 @@ class ItemCreate(ItemFields):
     item_name: ReqStr = Field(max_length=255)
     category: ReqStr = Field(max_length=64)
     unit: ReqStr = Field(default="個", max_length=16)
-    unit_price: float = Field(default=0.0, ge=0)
+    unit_price: float = Field(default=0.0, ge=0, le=100_000_000, allow_inf_nan=False)
     is_asset: Literal[0, 1] = 0
     is_common: Literal[0, 1] = 0
     is_inventory_target: Literal[0, 1] = 1
@@ -40,7 +40,7 @@ class ItemUpdate(ItemFields):
     item_name: ReqStr | None = Field(default=None, max_length=255)
     category: ReqStr | None = Field(default=None, max_length=64)
     unit: ReqStr | None = Field(default=None, max_length=16)
-    unit_price: float | None = Field(default=None, ge=0)
+    unit_price: float | None = Field(default=None, ge=0, le=100_000_000, allow_inf_nan=False)
     is_asset: Literal[0, 1] | None = None
     is_common: Literal[0, 1] | None = None
     is_inventory_target: Literal[0, 1] | None = None

@@ -4,9 +4,11 @@ Revision ID: 0003_overhaul
 Revises: 0002_seed_defaults
 Create Date: 2026-10-23 00:00:00
 
-docs/REVIEW_2026-10-23.md の A-03 / B-01 / B-02 / B-10 / B-19 / D-07 / G-02 / G-03 に対応。
+docs/REVIEW_2026-10-23.md の A-03 / B-01 / B-02 / B-10 / B-19 / D-07 / G-02 / G-03 / H-04 / H-10 / H-11 に対応。
 """
 from __future__ import annotations
+
+import re
 
 import bcrypt
 import sqlalchemy as sa
@@ -26,20 +28,37 @@ _BLANK_TO_NULL = [
 
 
 def upgrade() -> None:
-    op.add_column("items", sa.Column("unit", sa.String(16), server_default="個"))
-    op.add_column("users", sa.Column("must_change_password", sa.Integer, server_default="0"))
-    op.add_column("users", sa.Column("failed_login_count", sa.Integer, server_default="0"))
+    # モデルと同じく NOT NULL（既定値つき）にそろえる（H-11）
+    op.add_column("items", sa.Column("unit", sa.String(16), nullable=False, server_default="個"))
+    op.add_column("users", sa.Column("must_change_password", sa.Integer, nullable=False, server_default="0"))
+    op.add_column("users", sa.Column("failed_login_count", sa.Integer, nullable=False, server_default="0"))
     op.add_column("users", sa.Column("locked_until", sa.DateTime))
-    op.add_column("users", sa.Column("token_version", sa.Integer, server_default="0"))
+    op.add_column("users", sa.Column("token_version", sa.Integer, nullable=False, server_default="0"))
     op.add_column("inventory_history", sa.Column("ref_type", sa.String(16)))
     op.add_column("inventory_history", sa.Column("ref_id", sa.Integer))
     op.add_column("stocktake_sessions", sa.Column("scope_category", sa.String(64)))
+    # 実施中（OPEN）の棚卸しは1つだけ（H-04）。古いデータに複数あれば、新しい1つを残して中止にする
+    op.get_bind().execute(sa.text(
+        "UPDATE stocktake_sessions SET status = 'CANCELLED' WHERE status = 'OPEN' AND id <> "
+        "(SELECT MAX(id) FROM stocktake_sessions WHERE status = 'OPEN')"
+    ))
+    op.create_index("uq_stocktake_one_open", "stocktake_sessions", ["status"], unique=True,
+                    sqlite_where=sa.text("status = 'OPEN'"), postgresql_where=sa.text("status = 'OPEN'"))
 
     conn = op.get_bind()
     conn.execute(sa.text("UPDATE items SET unit = '個' WHERE unit IS NULL"))
     for col in _BLANK_TO_NULL:
         conn.execute(sa.text(f"UPDATE items SET {col} = NULL WHERE TRIM({col}) = ''"))  # noqa: S608 (固定の列名)
     conn.execute(sa.text("UPDATE items SET unit_price = 0 WHERE unit_price IS NULL"))
+    # 古い日付の書き方（2026/10/01・2026-1-5 など）を YYYY-MM-DD にそろえる。期限切れの判定は文字の大小で比べるため（H-10）
+    for col in ("expiry_date", "last_inspection_date", "next_inspection_date"):
+        rows = conn.execute(sa.text(f"SELECT id, {col} FROM items WHERE {col} IS NOT NULL")).all()  # noqa: S608
+        for item_id, value in rows:
+            m = re.fullmatch(r"\s*(\d{4})[/.\-](\d{1,2})[/.\-](\d{1,2})\s*", value)
+            if m:
+                iso = f"{int(m[1]):04d}-{int(m[2]):02d}-{int(m[3]):02d}"
+                if iso != value:
+                    conn.execute(sa.text(f"UPDATE items SET {col} = :v WHERE id = :i"), {"v": iso, "i": item_id})  # noqa: S608
     # B-02：発注点（items.reorder_point）を在庫不足の判定（inventory.threshold）にそろえる
     conn.execute(
         sa.text(
@@ -68,6 +87,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_index("uq_stocktake_one_open", table_name="stocktake_sessions")
     with op.batch_alter_table("stocktake_sessions") as b:
         b.drop_column("scope_category")
     with op.batch_alter_table("inventory_history") as b:

@@ -1,6 +1,7 @@
 """Common Pydantic schemas and reusable field types."""
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Annotated, Generic, TypeVar
 
@@ -11,10 +12,16 @@ from app.utils.text import blank_to_none
 T = TypeVar("T")
 
 
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
 def _check_iso_date(v: str | None) -> str | None:
     if v is None:
         return None
     try:
+        # Python 3.11 の fromisoformat は "20260101" なども通すため、形を先に確かめる（文字の大小で比べるので形をそろえる）
+        if not _ISO_DATE.fullmatch(v):
+            raise ValueError(v)
         date.fromisoformat(v)
     except ValueError as e:
         raise ValueError("日付は YYYY-MM-DD の形式で入力してください") from e

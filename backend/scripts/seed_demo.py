@@ -47,7 +47,7 @@ def reset(db):
     print("✅ リセット完了")
 
 
-def seed(force: bool = False):
+def seed(force: bool = False, reset_users: bool = False):
     Base.metadata.create_all(engine)
     db = SessionLocal()
     try:
@@ -130,7 +130,9 @@ def seed(force: bool = False):
         for uname, pwd, disp, dept_name, role in user_data:
             existing = db.query(User).filter_by(username=uname).first()
             if existing:
-                # マイグレーションで作られた初期管理者もデモ用の内容にそろえる
+                if not reset_users:  # 既存ユーザーのパスワードは勝手に変えない（H-09）
+                    continue
+                # E2E のとき：マイグレーションで作られた初期管理者もデモ用の内容にそろえる
                 existing.password_hash = hash_password(pwd)
                 existing.must_change_password = 0
                 existing.display_name = disp
@@ -274,5 +276,11 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="デモデータ投入スクリプト")
     parser.add_argument("--force", action="store_true", help="既存データを削除して再投入")
+    parser.add_argument("--reset-users", action="store_true", help="既存のデモ用ユーザーのパスワードを初期値に戻す（E2E 用）")
     args = parser.parse_args()
-    seed(force=args.force)
+    from app.config import settings
+
+    if settings.is_production:  # 本番の DB にデモデータを入れない（H-09）
+        print("本番設定（APP_ENV=production）ではデモデータを入れられません", file=sys.stderr)
+        raise SystemExit(2)
+    seed(force=args.force, reset_users=args.reset_users)
