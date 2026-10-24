@@ -1,0 +1,5 @@
+# gitleaks が「秘密」と判定したが、本物の秘密ではないもの（理由つき）
+# 97826cb の CI 設定に書いていたテスト専用の JWT_SECRET（CI の中だけで使う値。本番の鍵ではない）。
+# 今の CI 設定からは消した（テストは backend/tests/conftest.py のテスト用の値を使う）。
+97826cb3bf50aef5566d6818b3928406be341262:.github/workflows/ci.yml:generic-api-key:36
+97826cb3bf50aef5566d6818b3928406be341262:.github/workflows/ci.yml:generic-api-key:81
