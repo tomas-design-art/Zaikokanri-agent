@@ -57,3 +57,6 @@ backups/*.csv
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 作業中の下書き（Git に入れない）
+.wip/

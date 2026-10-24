@@ -1,11 +1,13 @@
-"""Inventory router — listing with KPIs, filters, pagination."""
+"""Inventory router — 在庫一覧（KPI・絞り込み・ページ送り・CSV）。"""
 from __future__ import annotations
 
-from datetime import date, timedelta
+import csv
+import io
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user
@@ -13,6 +15,8 @@ from app.db import get_db
 from app.models import Inventory, Item
 from app.schemas.common import Page
 from app.schemas.items import InventoryRow
+from app.services.inventory_view import expiry_window, inventory_query, to_row
+from app.utils.text import csv_safe
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
 
@@ -25,58 +29,18 @@ class InventoryKPI(BaseModel):
     expiring_soon_count: int
 
 
-def _today_iso() -> str:
-    return date.today().isoformat()
-
-
-def _soon_iso(days: int = 30) -> str:
-    return (date.today() + timedelta(days=days)).isoformat()
-
-
 @router.get("/kpi", response_model=InventoryKPI)
-def kpi(
-    db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)
-) -> InventoryKPI:
-    today = _today_iso()
-    soon = _soon_iso(30)
-    total_items = db.query(func.count(Item.id)).filter(Item.is_active == 1).scalar() or 0
-    total_qty = (
-        db.query(func.coalesce(func.sum(Inventory.quantity), 0))
-        .join(Item, Item.id == Inventory.item_id)
-        .filter(Item.is_active == 1)
-        .scalar()
-        or 0
-    )
-    low = (
-        db.query(func.count(Inventory.id))
-        .join(Item, Item.id == Inventory.item_id)
-        .filter(Item.is_active == 1, Inventory.quantity <= Inventory.threshold)
-        .scalar()
-        or 0
-    )
-    expired = (
-        db.query(func.count(Item.id))
-        .filter(Item.is_active == 1, Item.expiry_date != None, Item.expiry_date < today)  # noqa: E711
-        .scalar()
-        or 0
-    )
-    expiring = (
-        db.query(func.count(Item.id))
-        .filter(
-            Item.is_active == 1,
-            Item.expiry_date != None,  # noqa: E711
-            Item.expiry_date >= today,
-            Item.expiry_date <= soon,
-        )
-        .scalar()
-        or 0
-    )
+def kpi(db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)) -> InventoryKPI:
+    today, soon = expiry_window()
+    active = db.query(Item).filter(Item.is_active == 1)
+    stock = db.query(Inventory).join(Item, Item.id == Inventory.item_id).filter(Item.is_active == 1)
+    with_expiry = active.filter(Item.expiry_date.is_not(None))
     return InventoryKPI(
-        total_items=total_items,
-        total_quantity=total_qty,
-        low_stock_count=low,
-        expired_count=expired,
-        expiring_soon_count=expiring,
+        total_items=active.count(),
+        total_quantity=stock.with_entities(func.coalesce(func.sum(Inventory.quantity), 0)).scalar() or 0,
+        low_stock_count=stock.filter(Inventory.quantity <= Inventory.threshold).count(),
+        expired_count=with_expiry.filter(Item.expiry_date < today).count(),
+        expiring_soon_count=with_expiry.filter(Item.expiry_date >= today, Item.expiry_date <= soon).count(),
     )
 
 
@@ -91,55 +55,35 @@ def list_inventory(
     db: Session = Depends(get_db),
     _: CurrentUser = Depends(get_current_user),
 ) -> Page[InventoryRow]:
-    today = _today_iso()
-    soon = _soon_iso(30)
-    query = db.query(Item, Inventory).join(Inventory, Inventory.item_id == Item.id).filter(
-        Item.is_active == 1
-    )
-    if q:
-        like = f"%{q}%"
-        query = query.filter(
-            or_(
-                Item.item_name.like(like),
-                Item.item_code.like(like),
-                Item.vendor_name.like(like),
-                Item.vendor_item_code.like(like),
-            )
-        )
-    if category:
-        query = query.filter(Item.category == category)
-    if department:
-        query = query.filter(Item.department_tags.like(f"%{department}%"))
-    if only_low_stock:
-        query = query.filter(Inventory.quantity <= Inventory.threshold)
-
+    query = inventory_query(db, q=q, category=category, department=department, only_low_stock=only_low_stock)
     total = query.count()
-    rows = (
-        query.order_by(Item.item_name)
-        .offset((page - 1) * per_page)
-        .limit(per_page)
-        .all()
-    )
-    out: list[InventoryRow] = []
+    rows = query.order_by(Item.item_name).offset((page - 1) * per_page).limit(per_page).all()
+    return Page[InventoryRow](items=[to_row(i, inv) for i, inv in rows], total=total, page=page, per_page=per_page)
+
+
+@router.get("/export.csv")
+def export_csv(
+    q: str | None = None,
+    category: str | None = None,
+    only_low_stock: bool = False,
+    db: Session = Depends(get_db),
+    _: CurrentUser = Depends(get_current_user),
+) -> StreamingResponse:
+    """在庫一覧の CSV（B-20）。Excel で文字化けしないよう BOM 付き UTF-8。"""
+    rows = inventory_query(db, q=q, category=category, only_low_stock=only_low_stock).order_by(Item.item_name).all()
+    buf = io.StringIO()
+    buf.write("﻿")
+    w = csv.writer(buf)
+    w.writerow(["物品名", "物品コード", "カテゴリ", "業者", "保管場所", "在庫数", "単位", "発注点", "単価", "有効期限", "状態"])
     for item, inv in rows:
-        is_expired = bool(item.expiry_date and item.expiry_date < today)
-        is_soon = bool(
-            item.expiry_date and not is_expired and today <= item.expiry_date <= soon
-        )
-        out.append(
-            InventoryRow(
-                item_id=item.id,
-                item_name=item.item_name,
-                item_code=item.item_code,
-                category=item.category,
-                vendor_name=item.vendor_name,
-                quantity=inv.quantity,
-                threshold=inv.threshold,
-                location=inv.location,
-                expiry_date=item.expiry_date,
-                is_low_stock=inv.quantity <= inv.threshold,
-                is_expired=is_expired,
-                is_expiring_soon=is_soon,
-            )
-        )
-    return Page[InventoryRow](items=out, total=total, page=page, per_page=per_page)
+        r = to_row(item, inv)
+        flags = (("期限切れ", r.is_expired), ("期限間近", r.is_expiring_soon), ("在庫不足", r.is_low_stock))
+        w.writerow([csv_safe(v) for v in [
+            r.item_name, r.item_code or "", r.category, r.vendor_name or "", r.location or "", r.quantity,
+            r.unit, r.threshold, r.unit_price, r.expiry_date or "", "・".join(s for s, on in flags if on),
+        ]])
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="inventory.csv"'},
+    )

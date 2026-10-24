@@ -1,4 +1,4 @@
-"""ORM models for all 14 tables (mirror of legacy SQLite schema)."""
+"""ORM models (legacy SQLite schema + 0003 additions)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -66,6 +67,13 @@ class User(Base):
     )
     user_role: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     is_active: Mapped[int] = mapped_column(Integer, default=1)
+    # 1 = 次のログイン後にパスワード変更が必須（初期パスワード・管理者がリセットした場合）
+    must_change_password: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # ログインに続けて失敗した回数と、ロックが解ける時刻（G-02）
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime)
+    # パスワード変更・リセット・無効化で増やす。これより古いトークンは使えない（G-03）
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_jst_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_jst_now, onupdate=_jst_now)
 
@@ -87,6 +95,7 @@ class Item(Base):
     vendor_name: Mapped[str | None] = mapped_column(String(128))
     vendor_item_code: Mapped[str | None] = mapped_column(String(64))
     category: Mapped[str] = mapped_column(String(64), nullable=False)
+    unit: Mapped[str] = mapped_column(String(16), default="個", server_default="個")
     department_tags: Mapped[str | None] = mapped_column(Text)  # CSV
     unit_price: Mapped[float] = mapped_column(Float, default=0.0)
     is_asset: Mapped[int] = mapped_column(Integer, default=0)
@@ -128,7 +137,8 @@ class InventoryHistory(Base):
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), nullable=False)
-    change_type: Mapped[str] = mapped_column(String(16), nullable=False)  # IN/OUT/DISPOSE/ORDER
+    # IN/OUT/DISPOSE は正の数量。ADJUST/STOCKTAKE は増減つき（負もある）
+    change_type: Mapped[str] = mapped_column(String(16), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     user_name: Mapped[str] = mapped_column(String(64), nullable=False)
     department: Mapped[str | None] = mapped_column(String(64))
@@ -138,6 +148,9 @@ class InventoryHistory(Base):
     unit_price: Mapped[float | None] = mapped_column(Float)
     total_price: Mapped[float | None] = mapped_column(Float)
     created_by: Mapped[int | None] = mapped_column(Integer)
+    # 由来：None=画面からの通常の入出庫, INIT=初期在庫, UNDO=取消, PT=ゲスト申請, DR=廃棄申請, PR=発注受領, ST=棚卸し
+    ref_type: Mapped[str | None] = mapped_column(String(16))
+    ref_id: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_jst_now, index=True)
 
 
@@ -229,12 +242,18 @@ class PurchaseCandidate(Base):
 
 class StocktakeSession(Base):
     __tablename__ = "stocktake_sessions"
+    # 実施中（OPEN）は1つだけ（H-04）
+    __table_args__ = (
+        Index("uq_stocktake_one_open", "status", unique=True,
+              sqlite_where=text("status = 'OPEN'"), postgresql_where=text("status = 'OPEN'")),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     start_date: Mapped[str | None] = mapped_column(String(32))
     end_date: Mapped[str | None] = mapped_column(String(32))
-    status: Mapped[str] = mapped_column(String(16), default="OPEN")
+    status: Mapped[str] = mapped_column(String(16), default="OPEN")  # OPEN / CLOSED / CANCELLED
     note: Mapped[str | None] = mapped_column(Text)
+    scope_category: Mapped[str | None] = mapped_column(String(64))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_jst_now)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -259,7 +278,7 @@ class StocktakeRecord(Base):
     approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime)
     note: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(16), default="PENDING")
+    status: Mapped[str] = mapped_column(String(16), default="PENDING")  # PENDING / COUNTED / APPLIED
 
 
 class StocktakeTemplate(Base):

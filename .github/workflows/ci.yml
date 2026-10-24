@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, staging, develop]
 
+# 方針（開発憲章 5章）：lint・型・テスト・E2E の失敗、脆弱性・秘密情報の検出は止める。
+# 監査ツールそのものの不調（ネットワーク等）だけは止めない。
+
 jobs:
   backend:
     name: Backend (ruff / pytest / pip-audit)
@@ -16,30 +19,88 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
-      - name: Install dependencies
+      - name: Install dependencies (hashed lock, 7-day cutoff)
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install --require-hashes -r requirements-dev.lock
 
       - name: Ruff (lint)
-        run: ruff check app tests
+        run: ruff check app tests alembic
 
       - name: Pytest
-        env:
-          JWT_SECRET: ci-test-secret
-          DATABASE_URL: sqlite:///./ci_test.db
-          RATE_LIMIT_LOGIN: 10000/minute
-        run: pytest -W ignore::DeprecationWarning
+        # JWT_SECRET はテスト用の値を tests/conftest.py が入れる（ここに鍵の形の文字を書かない＝gitleaks が止める）
+        run: pytest -q
 
-      - name: pip-audit (deps vuln scan)
-        continue-on-error: true
-        run: pip-audit --strict --skip-editable || true
+      - name: Lock files really follow the 7-day rule
+        # ロックを同じ条件で作り直して「部品名==版」を突き合わせる。公開7日未満の版が手で入っていれば差が出て止まる（uv はロックで固定）
+        shell: bash
+        run: |
+          for f in requirements.lock requirements-dev.lock; do
+            extra=""; [ "$f" = requirements-dev.lock ] && extra="--extra dev"
+            cp "$f" "/tmp/$f"
+            uv pip compile pyproject.toml --universal --generate-hashes --exclude-newer "7 days" $extra -o "/tmp/$f" -q
+            pins() { grep -E '^[a-z0-9][a-z0-9._-]*==' "$1" | sed 's/ .*//' | sort; }
+            diff <(pins "$f") <(pins "/tmp/$f") || { echo "::error::$f が7日ルールの作り直しと一致しません"; exit 1; }
+          done
+
+      - name: pip-audit (vulnerabilities block, tool failure does not)
+        # 脆弱性が見つかったら止める。道具そのものの不調（ネットワーク等）では止めない（開発憲章 5章）
+        run: |
+          pip-audit -r requirements.lock --require-hashes --disable-pip -f json -o audit.json || true
+          python - <<'PY'
+          import json, pathlib, sys
+          p = pathlib.Path("audit.json")
+          if not p.exists() or not p.read_text().strip():
+              print("::warning::pip-audit が結果を出せませんでした（道具の不調）。止めずに進めます"); sys.exit(0)
+          vulns = [(d["name"], d["version"], v["id"]) for d in json.loads(p.read_text())["dependencies"] for v in d.get("vulns", [])]
+          for v in vulns: print("::error::脆弱性", *v)
+          sys.exit(1 if vulns else 0)
+          PY
+
+  backend-postgres:
+    # 本番と同じ PostgreSQL でマイグレーションと全テストを流す（SQLite では見えない不具合を捕まえる）
+    name: Backend on PostgreSQL 15 (alembic / pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: zaiko
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (hashed lock, 7-day cutoff)
+        run: |
+          pip install --require-hashes -r requirements-dev.lock
+
+      - name: Alembic upgrade / downgrade / upgrade on an empty database
+        env:
+          DATABASE_URL: postgresql://postgres:ci-only@localhost:5432/zaiko
+        run: |
+          alembic upgrade head
+          alembic downgrade 0002_seed_defaults
+          alembic upgrade head
+
+      - name: Pytest on PostgreSQL
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:ci-only@localhost:5432/zaiko_test
+        run: |
+          PGPASSWORD=ci-only psql -h localhost -U postgres -c "CREATE DATABASE zaiko_test;"
+          pytest -q
 
   frontend:
     name: Frontend (typecheck / lint / build)
@@ -50,30 +111,73 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
 
       - name: Lint
-        run: npm run lint --silent || true
+        run: npm run lint
 
       - name: Build
         env:
           NEXT_PUBLIC_API_BASE: http://localhost:8000
         run: npm run build
 
-      - name: npm audit (prod deps)
-        continue-on-error: true
-        run: npm audit --omit=dev || true
+      - name: npm audit (prod deps; vulnerabilities block, tool failure does not)
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          node -e "const fs=require('fs');let j;try{j=JSON.parse(fs.readFileSync('audit.json','utf8'))}catch{console.log('::warning::npm audit が結果を出せませんでした（道具の不調）');process.exit(0)}const n=(j.metadata&&j.metadata.vulnerabilities)||{};const bad=(n.high||0)+(n.critical||0)+(n.moderate||0);if(bad){console.log('::error::本番の依存に脆弱性',JSON.stringify(n));process.exit(1)}"
+
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend
+        working-directory: backend
+        run: |
+          pip install --require-hashes -r requirements.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend + browser
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run E2E
+        working-directory: frontend
+        env:
+          CI: "1"
+          E2E_PYTHON: python
+        run: npm run e2e
+
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          retention-days: 7
 
   secrets-scan:
     name: Gitleaks (secret scan)
@@ -83,7 +187,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Gitleaks
+        # 秘密情報を見つけたら止める
         uses: gitleaks/gitleaks-action@v2
-        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

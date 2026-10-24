@@ -1,44 +1,30 @@
 """AI router — natural-language inventory query and order suggestion.
 
-NOTE: Read-only SQL execution is restricted to SELECT statements only.
+AI が作った SQL の実行可否はコードのルールで判定する（app/services/ai_query.py）。
 """
 from __future__ import annotations
 
-import re
-
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy import text
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user
 from app.config import settings
 from app.db import get_db
 from app.models import Inventory, Item
+from app.services.ai_query import is_safe_sql, run_readonly_query
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 
 class QueryRequest(BaseModel):
-    question: str
+    question: str = Field(min_length=1, max_length=500)
 
 
 class QueryResponse(BaseModel):
     answer: str
     sql: str | None = None
     rows: list[dict] | None = None
-
-
-_SAFE_SQL_RE = re.compile(r"^\s*select\b", re.IGNORECASE)
-_FORBIDDEN_RE = re.compile(r"\b(insert|update|delete|drop|alter|create|truncate|attach|pragma)\b", re.IGNORECASE)
-
-
-def _is_safe_sql(sql: str) -> bool:
-    if not _SAFE_SQL_RE.match(sql):
-        return False
-    if _FORBIDDEN_RE.search(sql):
-        return False
-    return ";" not in sql.rstrip(";")
 
 
 def _ai_unavailable() -> QueryResponse:
@@ -81,16 +67,15 @@ def query(
         sql = (completion.choices[0].message.content or "").strip()
         sql = sql.strip("`").replace("```sql", "").replace("```", "").strip()
     except Exception as e:  # pragma: no cover
-        raise HTTPException(502, f"AI呼び出し失敗: {e}") from e
+        raise HTTPException(502, "AIの呼び出しに失敗しました。時間をおいてお試しください") from e
 
-    if not _is_safe_sql(sql):
+    if not is_safe_sql(sql):
         return QueryResponse(answer="安全でないSQLが生成されたため実行を拒否しました。", sql=sql)
-
     try:
-        rows = [dict(r._mapping) for r in db.execute(text(sql)).all()]
-    except Exception as e:
-        return QueryResponse(answer=f"SQL実行エラー: {e}", sql=sql)
-    return QueryResponse(answer=f"結果 {len(rows)} 件", sql=sql, rows=rows)
+        rows = run_readonly_query(db, sql)
+    except Exception as e:  # noqa: BLE001
+        return QueryResponse(answer=f"SQLを実行できませんでした（{type(e).__name__}）", sql=sql)
+    return QueryResponse(answer=f"結果 {len(rows)} 件（最大200件まで表示）", sql=sql, rows=rows)
 
 
 class OrderSuggestion(BaseModel):

@@ -1,87 +1,94 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { api } from "@/lib/api";
-import type { InventoryRow, Page } from "@/lib/types";
+import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { api, downloadFile, errorText } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { fmtQty } from "@/lib/format";
+import type { CategoryOut, InventoryRow, Page } from "@/lib/types";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
+import { useMe } from "@/lib/use-me";
+import { Field, PageHeader, Pager, StateRow } from "@/components/ui";
+
+const PER_PAGE = 100;
 
 export default function InventoryPage() {
+    const { isAdmin } = useMe();
     const [q, setQ] = useState("");
     const [category, setCategory] = useState("");
     const [onlyLow, setOnlyLow] = useState(false);
     const [page, setPage] = useState(1);
-    const per_page = 100;
-
     const qDeb = useDebouncedValue(q, 300);
-    const catDeb = useDebouncedValue(category, 300);
-    const { data, isLoading } = useQuery({
-        queryKey: ["inventory", qDeb, catDeb, onlyLow, page],
-        queryFn: () => api<Page<InventoryRow>>("/inventory", {
-            params: { q: qDeb, category: catDeb, only_low_stock: onlyLow, page, per_page },
-        }),
+    const params = { q: qDeb, category, only_low_stock: onlyLow };
+
+    const cats = useQuery({ queryKey: ["cats"], queryFn: () => api<CategoryOut[]>("/categories") });
+    const { data, isLoading, error } = useQuery({
+        queryKey: ["inventory", params, page],
+        queryFn: () => api<Page<InventoryRow>>("/inventory", { params: { ...params, page, per_page: PER_PAGE } }),
     });
+
+    async function exportCsv() {
+        try { await downloadFile("/inventory/export.csv", "在庫一覧.csv", { params }); } catch (e) { toast.error(errorText(e)); }
+    }
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h1 className="text-2xl font-bold">在庫一覧</h1>
-                <Link href="/items/new" className="btn-primary">＋ 物品を登録</Link>
-            </div>
-            <div className="card p-3 flex flex-wrap gap-2 items-center">
-                <input className="input max-w-xs" placeholder="物品名 / コード / 業者で検索" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} />
-                <input className="input max-w-[180px]" placeholder="カテゴリ" value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }} />
-                <label className="flex items-center gap-1 text-sm">
+            <PageHeader title="在庫一覧" actions={<>
+                <button className="btn-secondary" onClick={exportCsv}>CSV ダウンロード</button>
+                {isAdmin && <Link href="/items/new" className="btn-primary">＋ 物品を登録</Link>}
+            </>} />
+            <div className="card flex flex-wrap items-end gap-3 p-3">
+                <Field label="検索" className="w-full sm:w-72">
+                    {(id) => <input id={id} className="input" placeholder="物品名 / コード / 業者" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} />}
+                </Field>
+                <Field label="カテゴリ" className="w-full sm:w-48">
+                    {(id) => (
+                        <select id={id} className="input" value={category} onChange={(e) => { setCategory(e.target.value); setPage(1); }}>
+                            <option value="">すべて</option>
+                            {cats.data?.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+                        </select>
+                    )}
+                </Field>
+                <label className="flex items-center gap-1 pb-2 text-sm">
                     <input type="checkbox" checked={onlyLow} onChange={(e) => { setOnlyLow(e.target.checked); setPage(1); }} />
                     在庫不足のみ
                 </label>
-                <span className="ml-auto text-sm text-slate-500">{data ? `${data.total} 件` : "..."}</span>
+                <span className="ml-auto pb-2 text-sm text-slate-500" aria-live="polite">{data ? `${data.total} 件` : ""}</span>
             </div>
             <div className="card overflow-x-auto">
                 <table className="table-zk">
                     <thead>
                         <tr>
-                            <th>物品名</th><th>コード</th><th>カテゴリ</th><th>業者</th>
-                            <th className="text-right">在庫</th><th className="text-right">閾値</th>
-                            <th>有効期限</th><th>状態</th><th></th>
+                            <th>物品名</th><th>コード</th><th>カテゴリ</th><th>保管場所</th><th>業者</th>
+                            <th className="text-right">在庫</th><th className="text-right">発注点</th><th>有効期限</th><th>状態</th>{isAdmin && <th />}
                         </tr>
                     </thead>
                     <tbody>
-                        {isLoading ? (
-                            <tr><td colSpan={9} className="text-center text-slate-500 py-6">読み込み中...</td></tr>
-                        ) : (data?.items.length ?? 0) === 0 ? (
-                            <tr><td colSpan={9} className="text-center text-slate-500 py-6">該当なし</td></tr>
-                        ) : (
-                            data!.items.map((r) => (
-                                <tr key={r.item_id}>
-                                    <td className="font-medium">{r.item_name}</td>
-                                    <td className="text-slate-500">{r.item_code || "-"}</td>
-                                    <td>{r.category}</td>
-                                    <td className="text-slate-600">{r.vendor_name || "-"}</td>
-                                    <td className={cn("text-right tabular-nums font-medium", r.is_low_stock && "text-amber-600")}>{r.quantity}</td>
-                                    <td className="text-right tabular-nums text-slate-500">{r.threshold}</td>
-                                    <td>{r.expiry_date || "-"}</td>
-                                    <td>
-                                        {r.is_expired && <span className="badge bg-red-100 text-red-700">期限切れ</span>}
-                                        {r.is_expiring_soon && <span className="badge bg-orange-100 text-orange-700">期限間近</span>}
-                                        {r.is_low_stock && <span className="badge bg-amber-100 text-amber-700 ml-1">在庫不足</span>}
-                                    </td>
-                                    <td><Link href={`/items/${r.item_id}`} className="text-brand-600 hover:underline text-xs">編集</Link></td>
-                                </tr>
-                            ))
-                        )}
+                        <StateRow colSpan={isAdmin ? 10 : 9} loading={isLoading} error={error} empty={data?.items.length === 0} />
+                        {data?.items.map((r) => (
+                            <tr key={r.item_id}>
+                                <td className="font-medium">{r.item_name}</td>
+                                <td className="text-slate-500">{r.item_code || "-"}</td>
+                                <td>{r.category}</td>
+                                <td className="text-slate-600">{r.location || "-"}</td>
+                                <td className="text-slate-600">{r.vendor_name || "-"}</td>
+                                <td className={cn("text-right font-medium tabular-nums", r.is_low_stock && "text-amber-600")}>{fmtQty(r.quantity, r.unit)}</td>
+                                <td className="text-right text-slate-500 tabular-nums">{r.threshold}</td>
+                                <td>{r.expiry_date || "-"}</td>
+                                <td className="space-x-1">
+                                    {r.is_expired && <span className="badge bg-red-100 text-red-700">期限切れ</span>}
+                                    {r.is_expiring_soon && <span className="badge bg-orange-100 text-orange-700">期限間近</span>}
+                                    {r.is_low_stock && <span className="badge bg-amber-100 text-amber-800">在庫不足</span>}
+                                </td>
+                                {isAdmin && <td><Link href={`/items/${r.item_id}`} className="btn-link text-xs">編集・調整</Link></td>}
+                            </tr>
+                        ))}
                     </tbody>
                 </table>
             </div>
-            {data && data.total > per_page && (
-                <div className="flex items-center justify-end gap-2">
-                    <button className="btn-secondary" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>前へ</button>
-                    <span className="text-sm text-slate-500">{page} / {Math.ceil(data.total / per_page)}</span>
-                    <button className="btn-secondary" disabled={page * per_page >= data.total} onClick={() => setPage((p) => p + 1)}>次へ</button>
-                </div>
-            )}
+            {data && <Pager page={page} perPage={PER_PAGE} total={data.total} onChange={setPage} />}
         </div>
     );
 }

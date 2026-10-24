@@ -1,4 +1,7 @@
-"""\u68da\u5378\u3057\u7d50\u679c Excel \u30ec\u30f3\u30c0\u30e9\u30fc (pure openpyxl)\u3002"""
+"""棚卸し結果 Excel レンダラー (pure openpyxl)（D-10）。
+
+並びは保管場所→物品名（歩く順）。実数が空の行はそのまま紙の棚卸表としても使える。
+"""
 from __future__ import annotations
 
 from io import BytesIO
@@ -6,70 +9,70 @@ from typing import Any
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+
+from app.utils.xlsx import write_cell
+
+COLUMNS: list[tuple[str, str, int]] = [
+    ("保管場所", "location", 14),
+    ("物品名", "item_name", 28),
+    ("物品コード", "item_code", 14),
+    ("カテゴリ", "category", 12),
+    ("単位", "unit", 6),
+    ("帳簿数", "system_qty", 9),
+    ("実数", "actual_qty", 9),
+    ("差異", "diff_qty", 9),
+    ("数えた人", "counted_by", 12),
+    ("数えた日時", "counted_at", 18),
+    ("メモ", "note", 30),
+]
+HEADER_ROW = 7
 
 
-def render_stocktake_excel(
-    rows: list[dict[str, Any]],
-    session_info: dict[str, Any],
-    summary: dict[str, Any],
-) -> bytes:
+def render_stocktake_excel(rows: list[dict[str, Any]], session_info: dict[str, Any], summary: dict[str, Any]) -> bytes:
     wb = Workbook()
     ws = wb.active
-    ws.title = "\u68da\u5378\u3057\u7d50\u679c"
-
+    ws.title = "棚卸し結果"
     header_fill = PatternFill("solid", fgColor="1565C0")
     header_font = Font(bold=True, color="FFFFFF")
-    surplus_font = Font(color="2E7D32", bold=True)
-    shortage_font = Font(color="C62828", bold=True)
 
-    ws["A1"] = "\u68da\u5378\u3057\u7d50\u679c\u30ec\u30dd\u30fc\u30c8"
+    ws["A1"] = "棚卸し結果レポート"
     ws["A1"].font = Font(bold=True, size=14)
-    ws.merge_cells("A1:G1")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(COLUMNS))
     ws["A1"].alignment = Alignment(horizontal="center")
+    for i, (label, key) in enumerate(
+        [("名称", "name"), ("状態", "status"), ("開始", "started_at"), ("対象カテゴリ", "category")], start=3
+    ):
+        ws.cell(row=i, column=1, value=f"{label}:").font = Font(bold=True)
+        write_cell(ws, i, 2, str(session_info.get(key, "")))
 
-    ws["A3"], ws["B3"] = "\u30bb\u30c3\u30b7\u30e7\u30f3\u540d:", session_info.get("name", "")
-    ws["A4"], ws["B4"] = "\u72b6\u614b:", session_info.get("status", "")
-    ws["A5"], ws["B5"] = "\u958b\u59cb\u65e5\u6642:", str(session_info.get("started_at", ""))
+    for col, (label, _, width) in enumerate(COLUMNS, 1):
+        c = ws.cell(row=HEADER_ROW, column=col, value=label)
+        c.fill, c.font, c.alignment = header_fill, header_font, Alignment(horizontal="center")
+        ws.column_dimensions[get_column_letter(col)].width = width
+    ws.freeze_panes = ws.cell(row=HEADER_ROW + 1, column=1)
 
-    headers = ["\u54c1\u76ee\u540d", "\u30b7\u30b9\u30c6\u30e0\u6570\u91cf", "\u5b9f\u6570", "\u5dee\u7570", "\u30b9\u30c6\u30fc\u30bf\u30b9", "\u30e1\u30e2"]
-    for col, h in enumerate(headers, 1):
-        c = ws.cell(row=7, column=col, value=h)
-        c.fill = header_fill
-        c.font = header_font
-        c.alignment = Alignment(horizontal="center")
+    diff_col = next(i for i, (_, k, _) in enumerate(COLUMNS, 1) if k == "diff_qty")
+    for r, row in enumerate(rows, HEADER_ROW + 1):
+        for col, (_, key, _) in enumerate(COLUMNS, 1):
+            value = row.get(key)
+            if key == "counted_at" and value:
+                value = str(value).replace("T", " ")[:16]
+            write_cell(ws, r, col, value)
+        diff = row.get("diff_qty")
+        if isinstance(diff, int) and diff:
+            ws.cell(row=r, column=diff_col).font = Font(color="2E7D32" if diff > 0 else "C62828", bold=True)
 
-    r = 8
-    for row in rows:
-        ws.cell(row=r, column=1, value=row.get("item_name", ""))
-        ws.cell(row=r, column=2, value=row.get("system_qty", 0))
-        ws.cell(row=r, column=3, value=row.get("actual_qty"))
-        diff_cell = ws.cell(row=r, column=4, value=row.get("diff_qty"))
-        if isinstance(row.get("diff_qty"), (int, float)):
-            if row["diff_qty"] > 0:
-                diff_cell.font = surplus_font
-            elif row["diff_qty"] < 0:
-                diff_cell.font = shortage_font
-        ws.cell(row=r, column=5, value=row.get("status", ""))
-        ws.cell(row=r, column=6, value=row.get("note", ""))
-        r += 1
-
-    for col, w in enumerate([28, 12, 10, 10, 14, 30], 1):
-        ws.column_dimensions[chr(64 + col)].width = w
-
-    ws2 = wb.create_sheet("\u30b5\u30de\u30ea\u30fc")
-    ws2["A1"] = "\u30b5\u30de\u30ea\u30fc"
+    ws2 = wb.create_sheet("サマリー")
+    ws2["A1"] = "サマリー"
     ws2["A1"].font = Font(bold=True, size=14)
-    rows_summary = [
-        ("\u5bfe\u8c61\u54c1\u76ee\u6570", summary.get("total_items", 0)),
-        ("\u30ab\u30a6\u30f3\u30c8\u6e08\u307f", summary.get("counted", 0)),
-        ("\u672a\u30ab\u30a6\u30f3\u30c8", summary.get("uncounted", 0)),
-        ("\u4e00\u81f4", summary.get("match", 0)),
-        ("\u4f59\u5270", summary.get("surplus", 0)),
-        ("\u4e0d\u8db3", summary.get("shortage", 0)),
-    ]
-    for i, (label, val) in enumerate(rows_summary, 3):
+    for i, (label, key) in enumerate(
+        [("対象品目数", "total"), ("カウント済み", "counted"), ("未カウント", "uncounted"), ("一致", "matched"), ("差異あり", "diff")],
+        start=3,
+    ):
         ws2.cell(row=i, column=1, value=label).font = Font(bold=True)
-        ws2.cell(row=i, column=2, value=val)
+        ws2.cell(row=i, column=2, value=summary.get(key, 0))
+    ws2.column_dimensions["A"].width = 16
 
     bio = BytesIO()
     wb.save(bio)

@@ -5,24 +5,26 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 # Add backend/ to sys.path so we can import app.*
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
+from app import models  # noqa: F401, E402  ensure all models registered
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.db.engine import _normalize_url  # noqa: E402
-from app import models  # noqa: F401, E402  ensure all models registered
 
-_db_url = _normalize_url(settings.database_url)
 config = context.config
+# 呼び出し側（テスト等）が sqlalchemy.url を渡したらそれを使い、無ければ app の設定を使う
+_db_url = _normalize_url(config.get_main_option("sqlalchemy.url") or settings.database_url)
 config.set_main_option("sqlalchemy.url", _db_url)
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

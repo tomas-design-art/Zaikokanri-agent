@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 # backend/ を sys.path に追加
@@ -24,6 +24,10 @@ from app.models import (  # noqa: E402
     Category, Department, Inventory, InventoryHistory,
     Item, User, Vendor,
 )
+from app.utils.datetime import jst_now  # noqa: E402
+
+# デモ・E2E 用の共通パスワード（アプリのパスワード規則＝8文字以上に合わせる）
+DEMO_PASSWORD = "pass1234"
 
 
 def reset(db):
@@ -43,7 +47,7 @@ def reset(db):
     print("✅ リセット完了")
 
 
-def seed(force: bool = False):
+def seed(force: bool = False, reset_users: bool = False):
     Base.metadata.create_all(engine)
     db = SessionLocal()
     try:
@@ -112,19 +116,28 @@ def seed(force: bool = False):
             # (username, password, display_name, dept_name, role)
             ("admin",  "admin123",  "管理者A",      "総務部",   "ADMIN"),
             ("admin2", "admin123",  "管理者B",      "事務",     "ADMIN"),
-            ("U001",   "0000",      "放射線太郎",   "放射線科", "USER"),
-            ("U002",   "0000",      "検査花子",     "検査科",   "USER"),
-            ("U003",   "0000",      "看護一郎",     "看護部",   "USER"),
-            ("U004",   "0000",      "薬剤次郎",     "薬剤部",   "USER"),
-            ("U005",   "0000",      "専門三郎",     "専門課",   "USER"),
-            ("U006",   "0000",      "運動四郎",     "運動課",   "USER"),
-            ("U007",   "0000",      "事務五郎",     "事務",     "USER"),
-            ("G001",   "0000",      "ゲスト放射線", "放射線科", "GUEST"),
-            ("G002",   "0000",      "ゲスト検査",   "検査科",   "GUEST"),
-            ("G003",   "0000",      "ゲスト看護",   "看護部",   "GUEST"),
+            ("U001",   DEMO_PASSWORD,      "放射線太郎",   "放射線科", "USER"),
+            ("U002",   DEMO_PASSWORD,      "検査花子",     "検査科",   "USER"),
+            ("U003",   DEMO_PASSWORD,      "看護一郎",     "看護部",   "USER"),
+            ("U004",   DEMO_PASSWORD,      "薬剤次郎",     "薬剤部",   "USER"),
+            ("U005",   DEMO_PASSWORD,      "専門三郎",     "専門課",   "USER"),
+            ("U006",   DEMO_PASSWORD,      "運動四郎",     "運動課",   "USER"),
+            ("U007",   DEMO_PASSWORD,      "事務五郎",     "事務",     "USER"),
+            ("G001",   DEMO_PASSWORD,      "ゲスト放射線", "放射線科", "GUEST"),
+            ("G002",   DEMO_PASSWORD,      "ゲスト検査",   "検査科",   "GUEST"),
+            ("G003",   DEMO_PASSWORD,      "ゲスト看護",   "看護部",   "GUEST"),
         ]
         for uname, pwd, disp, dept_name, role in user_data:
-            if db.query(User).filter_by(username=uname).first():
+            existing = db.query(User).filter_by(username=uname).first()
+            if existing:
+                if not reset_users:  # 既存ユーザーのパスワードは勝手に変えない（H-09）
+                    continue
+                # E2E のとき：マイグレーションで作られた初期管理者もデモ用の内容にそろえる
+                existing.password_hash = hash_password(pwd)
+                existing.must_change_password = 0
+                existing.display_name = disp
+                existing.department = dept_name
+                existing.department_id = depts[dept_name].id
                 continue
             d = depts[dept_name]
             u = User(
@@ -134,17 +147,18 @@ def seed(force: bool = False):
                 department=dept_name,
                 department_id=d.id,
                 user_role=role,
+                must_change_password=0,
             )
             db.add(u)
         db.commit()
         print(f"  ✅ {len(user_data)} ユーザー")
         print("  ADMIN: admin/admin123, admin2/admin123")
-        print("  USER : U001〜U007  (パスワード: 0000)")
-        print("  GUEST: G001〜G003  (パスワード: 0000)")
+        print(f"  USER : U001〜U007  (パスワード: {DEMO_PASSWORD})")
+        print(f"  GUEST: G001〜G003  (パスワード: {DEMO_PASSWORD})")
 
         # ── 物品・在庫 ─────────────────────────────────────────
         print("\n📦 物品・在庫を投入中...")
-        now = datetime.now()
+        now = jst_now()
         items_data = [
             # (item_name, item_code, vendor_code, category, unit_price, qty, threshold)
             ("ディスポ手袋（S）",    "G001", "V003", "消耗品",    200,  80, 20),
@@ -179,6 +193,10 @@ def seed(force: bool = False):
             ("プリントカートリッジ黒","PC01", "V006", "IT機器",  4500,   3,  2),
         ]
 
+        units = {"消耗品": "箱", "医療材料": "本", "事務用品": "冊", "洗剤・消毒薬": "本", "備品": "台",
+                 "薬品": "本", "IT機器": "台", "廃棄物": "個"}
+        locations = {"消耗品": "倉庫A-1", "医療材料": "倉庫A-2", "事務用品": "事務室棚", "洗剤・消毒薬": "倉庫B-1",
+                     "備品": "倉庫B-2", "薬品": "薬品庫", "IT機器": "事務室棚", "廃棄物": "倉庫B-3"}
         created_items = []
         for name, code, vcode, cat, price, qty, thresh in items_data:
             v = vendors[vcode]
@@ -190,6 +208,9 @@ def seed(force: bool = False):
                     vendor_name=v.vendor_name,
                     category=cat,
                     unit_price=float(price),
+                    unit=units.get(cat, "個"),
+                    location_text=locations.get(cat),
+                    reorder_point=thresh,
                     is_active=1,
                 )
                 db.add(it)
@@ -211,7 +232,7 @@ def seed(force: bool = False):
                 item_id=it.id,
                 change_type="IN",
                 quantity=qty,
-                user_name=admin_user.username,
+                user_name=admin_user.display_name,
                 created_by=admin_user.id,
                 department=admin_user.department,
                 note="初期在庫投入",
@@ -224,7 +245,7 @@ def seed(force: bool = False):
                 item_id=it.id,
                 change_type="OUT",
                 quantity=out,
-                user_name=admin_user.username,
+                user_name=admin_user.display_name,
                 created_by=admin_user.id,
                 department=admin_user.department,
                 note="通常使用",
@@ -251,7 +272,15 @@ def seed(force: bool = False):
 
 
 if __name__ == "__main__":
+    # 日本語 Windows（cp932）で出力をリダイレクトすると絵文字で落ちるため UTF-8 に固定
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="デモデータ投入スクリプト")
     parser.add_argument("--force", action="store_true", help="既存データを削除して再投入")
+    parser.add_argument("--reset-users", action="store_true", help="既存のデモ用ユーザーのパスワードを初期値に戻す（E2E 用）")
     args = parser.parse_args()
-    seed(force=args.force)
+    from app.config import settings
+
+    if settings.is_production:  # 本番の DB にデモデータを入れない（H-09）
+        print("本番設定（APP_ENV=production）ではデモデータを入れられません", file=sys.stderr)
+        raise SystemExit(2)
+    seed(force=args.force, reset_users=args.reset_users)

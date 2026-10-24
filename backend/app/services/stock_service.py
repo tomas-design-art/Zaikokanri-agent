@@ -1,14 +1,31 @@
-"""Service layer: outbound / inbound / adjust core logic (transaction-safe)."""
+"""在庫を動かす処理はすべてここを通す（履歴の記録と在庫の増減を同じトランザクションで行う）。
+
+呼び出し側は成功したら commit、StockError なら rollback する。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Inventory, InventoryHistory, Item
 from app.utils.datetime import jst_now
+
+DEFAULT_THRESHOLD = 10
+# 取消できる由来（None＝画面からの通常の入出庫）。申請・受領・棚卸し等は元の処理側で直す（B-10）
+UNDOABLE_REF_TYPES = {None}
+
+
+@dataclass(frozen=True, slots=True)
+class Actor:
+    """操作した人。履歴の担当者・部署・操作者IDに使う。"""
+
+    user_id: int | None
+    name: str
+    department: str | None
 
 
 @dataclass
@@ -21,185 +38,170 @@ class StockResult:
 
 
 class StockError(Exception):
-    pass
+    """利用者に見せてよい在庫処理のエラー（日本語のメッセージ）。"""
 
 
-def _get_inventory_for_update(db: Session, item_id: int) -> tuple[Item, Inventory]:
+def lock_inventory(db: Session, item_id: int) -> tuple[Item, Inventory]:
     item = db.get(Item, item_id)
     if not item or not item.is_active:
-        raise StockError("対象の物品が見つかりません")
-    inv = db.query(Inventory).filter(Inventory.item_id == item_id).with_for_update().first()
+        raise StockError("対象の物品が見つからないか、無効になっています")
+    # Inventory は物品を外部結合で読み込むため、ロックは在庫の表だけにかける
+    # （PostgreSQL は外部結合の NULL 側に FOR UPDATE を付けられない）
+    inv = db.query(Inventory).filter(Inventory.item_id == item_id).with_for_update(of=Inventory).first()
     if not inv:
-        # Auto-create if missing
-        inv = Inventory(item_id=item_id, quantity=0, threshold=10)
+        inv = Inventory(item_id=item_id, quantity=0, threshold=item.reorder_point or DEFAULT_THRESHOLD)
         db.add(inv)
         db.flush()
     return item, inv
 
 
-def process_outbound(
+def _record(
     db: Session,
+    inv: Inventory,
+    item: Item,
+    actor: Actor,
     *,
-    item_id: int,
-    quantity: int,
-    user_name: str,
-    department: str | None,
+    change_type: str,
+    signed_change: int,
+    history_qty: int,
     note: str | None = None,
-    status: str = "CONFIRMED",
-) -> StockResult:
-    if quantity <= 0 or quantity > settings.outbound_max:
-        raise StockError(f"数量は 1〜{settings.outbound_max} の範囲で指定してください")
-    item, inv = _get_inventory_for_update(db, item_id)
-    if inv.quantity < quantity:
-        raise StockError(f"在庫不足: 現在庫 {inv.quantity}, 出庫 {quantity}")
-    inv.quantity -= quantity
-    inv.updated_at = jst_now()
-    hist = InventoryHistory(
-        item_id=item_id,
-        change_type="OUT",
-        quantity=quantity,
-        user_name=user_name,
-        department=department,
-        status=status,
-        note=note,
-        created_at=jst_now(),
-    )
-    db.add(hist)
-    db.flush()
-    return StockResult(item.id, item.item_name, -quantity, inv.quantity, hist.id)
-
-
-def process_inbound(
-    db: Session,
-    *,
-    item_id: int,
-    quantity: int,
-    user_name: str,
-    department: str | None,
+    ref: tuple[str, int | None] | None = None,
     vendor_name: str | None = None,
     unit_price: float | None = None,
-    note: str | None = None,
 ) -> StockResult:
-    if quantity <= 0 or quantity > settings.inbound_max:
-        raise StockError(f"数量は 1〜{settings.inbound_max} の範囲で指定してください")
-    item, inv = _get_inventory_for_update(db, item_id)
-    inv.quantity += quantity
-    inv.updated_at = jst_now()
-    total = (unit_price or 0) * quantity if unit_price else None
+    # 「足りるときだけ増減する」を1文の条件付き更新で行う（H-01）。
+    # SQLite では行ロックが効かないため、読んだ値から計算して書き戻すと、同時の操作で片方の更新が消える
+    res = db.execute(
+        update(Inventory)
+        .where(Inventory.id == inv.id, Inventory.quantity + signed_change >= 0)
+        .values(quantity=Inventory.quantity + signed_change, updated_at=jst_now())
+        .execution_options(synchronize_session=False)
+    )
+    if res.rowcount != 1:
+        raise StockError(f"「{item.item_name}」の在庫が足りません（ほかの人の操作で在庫が変わりました。画面を更新してください）")
+    db.refresh(inv)
     hist = InventoryHistory(
-        item_id=item_id,
-        change_type="IN",
-        quantity=quantity,
-        user_name=user_name,
-        department=department,
+        item_id=item.id,
+        change_type=change_type,
+        quantity=history_qty,
+        user_name=actor.name,
+        department=actor.department,
         status="CONFIRMED",
         note=note,
         vendor_name=vendor_name,
         unit_price=unit_price,
-        total_price=total,
+        total_price=unit_price * history_qty if unit_price is not None else None,
+        created_by=actor.user_id,
+        ref_type=ref[0] if ref else None,
+        ref_id=ref[1] if ref else None,
         created_at=jst_now(),
     )
     db.add(hist)
     db.flush()
-    return StockResult(item.id, item.item_name, quantity, inv.quantity, hist.id)
+    return StockResult(item.id, item.item_name, signed_change, inv.quantity, hist.id)
+
+
+def check_outbound(item: Item, inv: Inventory, quantity: int, verb: str = "出庫") -> None:
+    if quantity <= 0 or quantity > settings.outbound_max:
+        raise StockError(f"数量は 1〜{settings.outbound_max} の範囲で指定してください")
+    if inv.quantity < quantity:
+        raise StockError(f"「{item.item_name}」の在庫が足りません（現在庫 {inv.quantity}、{verb} {quantity}）")
+
+
+def process_outbound(
+    db: Session, actor: Actor, *, item_id: int, quantity: int, note: str | None = None,
+    ref: tuple[str, int | None] | None = None,
+) -> StockResult:
+    item, inv = lock_inventory(db, item_id)
+    check_outbound(item, inv, quantity)
+    return _record(db, inv, item, actor, change_type="OUT", signed_change=-quantity, history_qty=quantity, note=note, ref=ref)
+
+
+def process_inbound(
+    db: Session, actor: Actor, *, item_id: int, quantity: int, vendor_name: str | None = None,
+    unit_price: float | None = None, note: str | None = None, ref: tuple[str, int | None] | None = None,
+) -> StockResult:
+    if quantity <= 0 or quantity > settings.inbound_max:
+        raise StockError(f"数量は 1〜{settings.inbound_max} の範囲で指定してください")
+    item, inv = lock_inventory(db, item_id)
+    return _record(
+        db, inv, item, actor, change_type="IN", signed_change=quantity, history_qty=quantity, note=note, ref=ref,
+        vendor_name=vendor_name, unit_price=unit_price,
+    )
 
 
 def process_dispose(
-    db: Session,
-    *,
-    item_id: int,
-    quantity: int,
-    user_name: str,
-    department: str | None,
-    reason: str,
+    db: Session, actor: Actor, *, item_id: int, quantity: int, reason: str, ref: tuple[str, int | None] | None = None,
 ) -> StockResult:
-    if quantity <= 0:
-        raise StockError("数量は1以上を指定してください")
-    item, inv = _get_inventory_for_update(db, item_id)
-    if inv.quantity < quantity:
-        raise StockError(f"在庫不足: 現在庫 {inv.quantity}, 廃棄 {quantity}")
-    inv.quantity -= quantity
-    inv.updated_at = jst_now()
-    hist = InventoryHistory(
-        item_id=item_id,
-        change_type="DISPOSE",
-        quantity=quantity,
-        user_name=user_name,
-        department=department,
-        status="CONFIRMED",
-        note=reason,
-        created_at=jst_now(),
-    )
-    db.add(hist)
-    db.flush()
-    return StockResult(item.id, item.item_name, -quantity, inv.quantity, hist.id)
+    item, inv = lock_inventory(db, item_id)
+    check_outbound(item, inv, quantity, verb="廃棄")
+    return _record(db, inv, item, actor, change_type="DISPOSE", signed_change=-quantity, history_qty=quantity, note=reason, ref=ref)
 
 
-def process_adjust(
-    db: Session,
-    *,
-    item_id: int,
-    new_quantity: int,
-    user_name: str,
-    department: str | None,
-    reason: str,
-) -> StockResult:
+def process_adjust(db: Session, actor: Actor, *, item_id: int, new_quantity: int, reason: str) -> StockResult:
+    """在庫数を直接直す。履歴は ADJUST（増減つき）で、出庫統計には入らない（B-12）。"""
     if new_quantity < 0:
-        raise StockError("新数量は0以上で指定してください")
-    item, inv = _get_inventory_for_update(db, item_id)
+        raise StockError("新しい数量は0以上で指定してください")
+    item, inv = lock_inventory(db, item_id)
     diff = new_quantity - inv.quantity
-    inv.quantity = new_quantity
-    inv.updated_at = jst_now()
-    change_type = "IN" if diff >= 0 else "OUT"
-    hist = InventoryHistory(
-        item_id=item_id,
-        change_type=change_type,
-        quantity=abs(diff),
-        user_name=user_name,
-        department=department,
-        status="CONFIRMED",
-        note=f"[調整] {reason}",
-        created_at=jst_now(),
+    if diff == 0:
+        raise StockError("現在の在庫数と同じです。変更はありません")
+    return _record(db, inv, item, actor, change_type="ADJUST", signed_change=diff, history_qty=diff, note=reason)
+
+
+def apply_stocktake_diff(db: Session, actor: Actor, *, item_id: int, diff: int, session_id: int, note: str) -> StockResult | None:
+    """棚卸しの差異を今の在庫に足す（D-02）。在庫は0未満にしない。"""
+    item, inv = lock_inventory(db, item_id)
+    delta = max(diff, -inv.quantity)
+    if delta == 0:
+        return None
+    return _record(
+        db, inv, item, actor, change_type="STOCKTAKE", signed_change=delta, history_qty=delta, note=note,
+        ref=("ST", session_id),
     )
-    db.add(hist)
-    db.flush()
-    return StockResult(item.id, item.item_name, diff, inv.quantity, hist.id)
 
 
-def process_undo(db: Session, *, history_id: int, user_name: str) -> StockResult:
-    """Undo within UNDO_MINUTES — reverts the stock change."""
-    h = db.get(InventoryHistory, history_id)
-    if not h:
-        raise StockError("履歴が見つかりません")
+def record_initial_stock(db: Session, actor: Actor, item: Item, inv: Inventory, quantity: int) -> None:
+    if quantity > 0:
+        _record(db, inv, item, actor, change_type="IN", signed_change=quantity, history_qty=quantity,
+                note="初期在庫", ref=("INIT", None))
+
+
+def undo_problem(h: InventoryHistory, *, user_id: int, is_admin: bool) -> str | None:
+    """取消できない理由（取消できるなら None）。画面の「取消」ボタンの表示にも使う（B-10 / B-11）。"""
+    if h.change_type not in {"IN", "OUT"} or h.ref_type not in UNDOABLE_REF_TYPES:
+        return "通常の入庫・出庫だけ取り消せます"
     if h.status != "CONFIRMED":
-        raise StockError("確定済み履歴のみ取消可能です")
-    if h.change_type not in {"IN", "OUT"}:
-        raise StockError("入出庫履歴のみ取消可能です")
-    age = jst_now() - h.created_at
-    if age > timedelta(minutes=settings.undo_minutes):
-        raise StockError(f"取消可能時間({settings.undo_minutes}分)を超過しています")
+        return "この履歴はすでに取り消されています"
+    if not is_admin and h.created_by != user_id:
+        return "本人の操作だけ取り消せます"
+    if jst_now() - h.created_at > timedelta(minutes=settings.undo_minutes):
+        return f"取り消せるのは操作から{settings.undo_minutes}分以内です"
+    return None
 
-    item, inv = _get_inventory_for_update(db, h.item_id)
+
+def process_undo(db: Session, actor: Actor, h: InventoryHistory) -> StockResult:
+    item, inv = lock_inventory(db, h.item_id)
     if h.change_type == "IN":
         if inv.quantity < h.quantity:
-            raise StockError("入庫取消に必要な在庫がありません")
-        inv.quantity -= h.quantity
-        reverse_type = "OUT"
+            raise StockError("取り消すと在庫がマイナスになるため取り消せません")
+        signed, reverse = -h.quantity, "OUT"
     else:
-        inv.quantity += h.quantity
-        reverse_type = "IN"
-    inv.updated_at = jst_now()
-    h.status = "REJECTED"
-    new_h = InventoryHistory(
-        item_id=h.item_id,
-        change_type=reverse_type,
-        quantity=h.quantity,
-        user_name=user_name,
-        department=h.department,
-        status="CONFIRMED",
-        note=f"[取消] history_id={h.id}",
-        created_at=jst_now(),
+        signed, reverse = h.quantity, "IN"
+    # 「確定のときだけ取消済にする」を1文で行い、同時の取消を1回に限る（H-07）
+    res = db.execute(
+        update(InventoryHistory)
+        .where(InventoryHistory.id == h.id, InventoryHistory.status == "CONFIRMED")
+        .values(status="REJECTED")
+        .execution_options(synchronize_session=False)
     )
-    db.add(new_h)
-    db.flush()
-    return StockResult(item.id, item.item_name, -h.quantity if h.change_type == "IN" else h.quantity, inv.quantity, new_h.id)
+    if res.rowcount != 1:
+        raise StockError("この履歴はすでに取り消されています")
+    return _record(
+        db, inv, item, actor, change_type=reverse, signed_change=signed, history_qty=h.quantity,
+        note=f"取消（履歴 #{h.id}）", ref=("UNDO", h.id),
+    )
+
+
+def actor_of(user) -> Actor:  # noqa: ANN001 (CurrentUser)
+    return Actor(user_id=user.id, name=user.display_name, department=user.department)

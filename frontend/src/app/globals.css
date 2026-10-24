@@ -1,65 +1,95 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-:root {
-    color-scheme: light;
+@theme {
+    --color-brand-50: #eff6ff;
+    --color-brand-100: #dbeafe;
+    --color-brand-500: #3b82f6;
+    --color-brand-600: #2563eb;
+    --color-brand-700: #1d4ed8;
+    --font-sans: ui-sans-serif, system-ui, "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif;
 }
 
-html,
-body {
-    height: 100%;
+/* v4 は境界線の既定色が currentColor になったため、v3 と同じ薄い灰色に戻す */
+@layer base {
+    *,
+    ::after,
+    ::before,
+    ::backdrop,
+    ::file-selector-button {
+        border-color: var(--color-slate-200, currentColor);
+    }
+
+    :root {
+        color-scheme: light;
+    }
+
+    html,
+    body {
+        height: 100%;
+    }
+
+    body {
+        @apply bg-slate-50 text-slate-900 antialiased;
+    }
+
+    button:not(:disabled),
+    [role="button"]:not(:disabled) {
+        cursor: pointer;
+    }
 }
 
-body {
-    @apply bg-slate-50 text-slate-900 antialiased;
-    font-family: ui-sans-serif, system-ui, "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif;
+@utility btn {
+    @apply inline-flex items-center justify-center gap-1 rounded-md px-3 py-2 text-sm font-medium whitespace-nowrap transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50;
 }
 
-.btn {
-    @apply inline-flex items-center justify-center gap-1 rounded-md px-3 py-1.5 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed;
-}
-
-.btn-primary {
+@utility btn-primary {
     @apply btn bg-brand-600 text-white hover:bg-brand-700;
 }
 
-.btn-secondary {
-    @apply btn bg-white text-slate-700 border border-slate-300 hover:bg-slate-50;
+@utility btn-secondary {
+    @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-50;
 }
 
-.btn-danger {
+@utility btn-danger {
     @apply btn bg-red-600 text-white hover:bg-red-700;
 }
 
-.input {
-    @apply block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm shadow-sm placeholder:text-slate-400 focus:border-brand-500 focus:ring-1 focus:ring-brand-500;
+@utility btn-success {
+    @apply btn bg-emerald-600 text-white hover:bg-emerald-700;
 }
 
-.label {
-    @apply text-sm font-medium text-slate-700 mb-1 block;
+@utility btn-link {
+    @apply inline-flex items-center gap-1 rounded text-sm font-medium text-brand-700 hover:underline disabled:opacity-50;
 }
 
-.card {
-    @apply rounded-lg border border-slate-200 bg-white shadow-sm;
+@utility input {
+    @apply block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-xs placeholder:text-slate-400 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none disabled:bg-slate-100 aria-invalid:border-red-500;
 }
 
-.table-zk {
+@utility label {
+    @apply mb-1 block text-sm font-medium text-slate-700;
+}
+
+@utility card {
+    @apply rounded-lg border border-slate-200 bg-white shadow-xs;
+}
+
+@utility badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap;
+}
+
+@utility table-zk {
     @apply w-full text-sm;
-}
 
-.table-zk th {
-    @apply bg-slate-100 text-left font-medium px-3 py-2 border-b border-slate-200 sticky top-0;
-}
+    & th {
+        @apply sticky top-0 border-b border-slate-200 bg-slate-100 px-3 py-2 text-left font-medium whitespace-nowrap;
+    }
 
-.table-zk td {
-    @apply px-3 py-2 border-b border-slate-100;
-}
+    & td {
+        @apply border-b border-slate-100 px-3 py-2 align-middle;
+    }
 
-.table-zk tbody tr:hover {
-    @apply bg-slate-50;
-}
-
-.badge {
-    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+    & tbody tr:hover {
+        @apply bg-slate-50;
+    }
 }
