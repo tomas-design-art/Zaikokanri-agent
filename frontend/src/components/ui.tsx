@@ -7,8 +7,9 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { LabelMap } from "@/lib/labels";
 import { fmtQty } from "@/lib/format";
-import type { InventoryRow, Page } from "@/lib/types";
+import type { DepartmentOut, InventoryRow, Page } from "@/lib/types";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
+import { useScope } from "@/lib/use-scope";
 
 export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
     return (
@@ -165,9 +166,10 @@ export function ItemPicker({ label = "物品", value, onChange, autoFocus }: {
     const [q, setQ] = useState("");
     const qDeb = useDebouncedValue(q, 250);
     const inputRef = useRef<HTMLInputElement>(null);
+    const { scope } = useScope();
     const search = useQuery({
-        queryKey: ["item-picker", qDeb],
-        queryFn: () => api<Page<InventoryRow>>("/inventory", { params: { q: qDeb, per_page: 20 } }),
+        queryKey: ["item-picker", qDeb, scope],
+        queryFn: () => api<Page<InventoryRow>>("/inventory", { params: { q: qDeb, per_page: 20, scope } }),
         enabled: qDeb.trim().length > 0 && !value,
     });
     if (value) {
@@ -182,7 +184,7 @@ export function ItemPicker({ label = "物品", value, onChange, autoFocus }: {
         );
     }
     return (
-        <Field label={`${label}を検索`} hint="物品名・コード・業者名の一部を入力して、候補から選びます">
+        <Field label={`${label}を検索`} hint="物品名・コード・業者名の一部を入力して、候補から選びます（ほかの部署の物品は、画面の上の切り替えで「全部署」にすると出ます）">
             {(id) => (
                 <div className="relative">
                     <Search size={16} className="pointer-events-none absolute top-2.5 left-2.5 text-slate-400" />
@@ -206,4 +208,33 @@ export function ItemPicker({ label = "物品", value, onChange, autoFocus }: {
             )}
         </Field>
     );
+}
+
+/** 「自分の部署＋共通」と「全部署」の切り替え（I-03）。ゲストには切り替えを出さない。 */
+export function ScopeToggle({ className }: { className?: string }) {
+    const { scope, canSwitch, hasDepartment, setScope } = useScope();
+    const mine = hasDepartment ? "自分の部署＋共通" : "共通の物品";
+    if (!canSwitch) return <span className={cn("text-xs text-slate-500", className)}>表示：{mine}</span>;
+    return (
+        <div role="group" aria-label="表示する範囲" className={cn("inline-flex overflow-hidden rounded-md border border-slate-300 text-sm", className)}>
+            {([["dept", mine], ["all", "全部署"]] as const).map(([value, label]) => (
+                <button key={value} type="button" aria-pressed={scope === value} onClick={() => setScope(value)}
+                    className={cn("px-3 py-1.5", scope === value ? "bg-brand-600 text-white" : "bg-white text-slate-600 hover:bg-slate-50")}>
+                    {label}
+                </button>
+            ))}
+        </div>
+    );
+}
+
+/** 部署IDから部署名を引く（物品の所属の表示用）。 */
+export function useDepartmentNames(): Map<number, string> {
+    const { data } = useQuery({ queryKey: ["departments"], queryFn: () => api<DepartmentOut[]>("/departments", { params: { include_inactive: true } }) });
+    return new Map((data ?? []).map((d) => [d.id, d.name]));
+}
+
+/** 物品の所属：「検査科」「共通」「総務部・共通」。 */
+export function ownerLabel(names: Map<number, string>, ownerId: number | null, isCommon: boolean | number): string {
+    const parts = [ownerId != null ? names.get(ownerId) ?? "（不明な部署）" : null, isCommon ? "共通" : null].filter(Boolean);
+    return parts.join("・") || "-";
 }

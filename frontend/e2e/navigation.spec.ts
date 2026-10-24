@@ -46,16 +46,18 @@ test.describe("B-18 ロールごとに出すメニュー", () => {
         test("申請だけができ、管理のメニューは出ない", async ({ page }) => {
             await page.goto("/dashboard");
             for (const name of ["在庫一覧", "出庫", "履歴", "廃棄申請"]) await expect(menu(page).getByRole("link", { name, exact: true })).toBeVisible();
-            for (const name of ["入庫", "発注申請", "棚卸し", "物品マスター", "ユーザー管理", "出庫承認"]) await expect(menu(page).getByRole("link", { name, exact: true })).toHaveCount(0);
+            for (const name of ["入庫", "発注申請", "棚卸し", "物品マスター", "ユーザー管理", "AIアシスタント"]) await expect(menu(page).getByRole("link", { name, exact: true })).toHaveCount(0);
+            await expect(menu(page).getByRole("link", { name: /^出庫承認/ })).toHaveCount(0);
             await expect(page.getByRole("link", { name: "出庫を申請する" })).toBeVisible();
         });
     });
     test.describe("一般ユーザー", () => {
         test.use({ storageState: authFile("user") });
-        test("入庫・発注申請・棚卸しはできるが、マスター管理は出ない", async ({ page }) => {
+        test("入庫・発注申請・棚卸し・自分の部署の出庫承認はできるが、マスター管理は出ない", async ({ page }) => {
             await page.goto("/dashboard");
             for (const name of ["入庫", "発注申請", "棚卸し"]) await expect(menu(page).getByRole("link", { name, exact: true })).toBeVisible();
-            for (const name of ["物品マスター", "ユーザー管理", "出庫承認", "メンテナンス"]) await expect(menu(page).getByRole("link", { name, exact: true })).toHaveCount(0);
+            await expect(menu(page).getByRole("link", { name: /^出庫承認/ })).toBeVisible();
+            for (const name of ["物品マスター", "ユーザー管理", "メンテナンス"]) await expect(menu(page).getByRole("link", { name, exact: true })).toHaveCount(0);
             await page.goto("/inventory");
             await expect(page.getByRole("link", { name: "＋ 物品を登録" })).toHaveCount(0);
             await expect(page.getByRole("link", { name: "編集・調整" })).toHaveCount(0);

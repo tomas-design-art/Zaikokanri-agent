@@ -9,7 +9,8 @@ import { api, apiPost, errorText } from "@/lib/api";
 import { fmtQty } from "@/lib/format";
 import type { InventoryRow, PROut } from "@/lib/types";
 import { useMe } from "@/lib/use-me";
-import { PageHeader, parseCount, StateRow } from "@/components/ui";
+import { useScope } from "@/lib/use-scope";
+import { PageHeader, parseCount, ScopeToggle, StateRow } from "@/components/ui";
 
 /** 推奨数量：発注点の2倍まで戻す数（最低1） */
 const suggested = (r: InventoryRow) => Math.max(r.threshold * 2 - r.quantity, 1);
@@ -19,8 +20,9 @@ export default function AlertsPage() {
     const router = useRouter();
     const { can } = useMe();
     const canRequest = can("USER");
-    const low = useQuery({ queryKey: ["alert-low"], queryFn: () => api<InventoryRow[]>("/alerts/low-stock") });
-    const exp = useQuery({ queryKey: ["alert-exp"], queryFn: () => api<InventoryRow[]>("/alerts/expiring", { params: { days: 30 } }) });
+    const { scope } = useScope();
+    const low = useQuery({ queryKey: ["alert-low", scope], queryFn: () => api<InventoryRow[]>("/alerts/low-stock", { params: { scope } }) });
+    const exp = useQuery({ queryKey: ["alert-exp", scope], queryFn: () => api<InventoryRow[]>("/alerts/expiring", { params: { days: 30, scope } }) });
     const [picked, setPicked] = useState<Record<number, string>>({});
     const pickedIds = Object.keys(picked).map(Number);
     const invalid = pickedIds.some((id) => parseCount(picked[id], { min: 1, max: 100000 }) === null);
@@ -49,7 +51,7 @@ export default function AlertsPage() {
 
     return (
         <div className="space-y-6">
-            <PageHeader title="アラート" />
+            <PageHeader title="アラート" actions={<ScopeToggle />} />
             <section aria-label="在庫不足">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <h2 className="font-semibold">在庫不足（{low.data?.length ?? 0}件）</h2>

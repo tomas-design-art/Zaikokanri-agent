@@ -9,7 +9,8 @@ import { REQUEST_STATUS } from "@/lib/labels";
 import type { InventoryRow, MyRequest, Page, StockResult } from "@/lib/types";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { useMe } from "@/lib/use-me";
-import { Badge, Field, PageHeader, parseCount, StateRow } from "@/components/ui";
+import { useScope } from "@/lib/use-scope";
+import { Badge, Field, PageHeader, parseCount, ScopeToggle, StateRow } from "@/components/ui";
 
 interface CartLine { row: InventoryRow; qty: string; note: string }
 
@@ -47,12 +48,13 @@ function MyRequests() {
 export default function OutboundPage() {
     const qc = useQueryClient();
     const { isGuest } = useMe();
+    const { scope } = useScope();
     const [q, setQ] = useState("");
     const [cart, setCart] = useState<CartLine[]>([]);
     const qDeb = useDebouncedValue(q, 250);
     const search = useQuery({
-        queryKey: ["outbound-search", qDeb],
-        queryFn: () => api<Page<InventoryRow>>("/inventory", { params: { q: qDeb, per_page: 30 } }),
+        queryKey: ["outbound-search", qDeb, scope],
+        queryFn: () => api<Page<InventoryRow>>("/inventory", { params: { q: qDeb, per_page: 30, scope } }),
     });
 
     const refresh = () => { for (const k of ["outbound-search", "inventory", "kpi", "history", "my-requests", "todo"]) qc.invalidateQueries({ queryKey: [k] }); };
@@ -94,7 +96,8 @@ export default function OutboundPage() {
     return (
         <div className="space-y-4">
             <PageHeader title={isGuest ? "出庫の申請" : "出庫"}
-                description={isGuest ? "ゲストの出庫は管理者の承認後に在庫から引かれます" : "使う物品をカートに入れて、まとめて出庫します"} />
+                description={isGuest ? "ゲストの出庫は、同じ部署の正社員か管理者の承認後に在庫から引かれます" : "使う物品をカートに入れて、まとめて出庫します"}
+                actions={<ScopeToggle />} />
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 <section className="card space-y-3 p-3" aria-label="物品の検索">
                     <Field label="物品を検索">{(id) => <input id={id} className="input" placeholder="物品名 / コード / 業者" value={q} onChange={(e) => setQ(e.target.value)} />}</Field>

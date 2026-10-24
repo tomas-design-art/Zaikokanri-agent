@@ -8,7 +8,8 @@ import { fmtDateTime, fmtSigned } from "@/lib/format";
 import { CHANGE_TYPE, HISTORY_STATUS } from "@/lib/labels";
 import type { HistoryRow, Page } from "@/lib/types";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
-import { Badge, ConfirmDialog, Field, PageHeader, Pager, StateRow } from "@/components/ui";
+import { useScope } from "@/lib/use-scope";
+import { Badge, ConfirmDialog, Field, PageHeader, Pager, ScopeToggle, StateRow } from "@/components/ui";
 
 const PER_PAGE = 50;
 const SIGNED = new Set(["ADJUST", "STOCKTAKE"]);
@@ -23,7 +24,8 @@ export default function HistoryPage() {
     const [page, setPage] = useState(1);
     const [target, setTarget] = useState<HistoryRow | null>(null);
     const qDeb = useDebouncedValue(q, 300);
-    const params = { q: qDeb, change_type: changeType, date_from: from, date_to: to, mine };
+    const { scope } = useScope();
+    const params = { q: qDeb, change_type: changeType, date_from: from, date_to: to, mine, scope };
     const reset = <T,>(set: (v: T) => void) => (v: T) => { set(v); setPage(1); };
 
     const { data, isLoading, error } = useQuery({
@@ -60,6 +62,10 @@ export default function HistoryPage() {
                 <Field label="開始日" className="w-40">{(id) => <input id={id} type="date" className="input" value={from} onChange={(e) => reset(setFrom)(e.target.value)} />}</Field>
                 <Field label="終了日" className="w-40">{(id) => <input id={id} type="date" className="input" value={to} onChange={(e) => reset(setTo)(e.target.value)} />}</Field>
                 <label className="flex items-center gap-1 pb-2 text-sm"><input type="checkbox" checked={mine} onChange={(e) => reset(setMine)(e.target.checked)} />自分の操作だけ</label>
+                <div className="pb-1">
+                    <ScopeToggle />
+                    <p className="mt-1 text-xs text-slate-500">自分の部署＝部署の人の操作と、部署の物品への操作</p>
+                </div>
             </div>
             <div className="card overflow-x-auto">
                 <table className="table-zk">

@@ -1,14 +1,15 @@
-"""Approvals (ゲスト出庫承認) router — ADMIN が PendingTransaction を承認・却下する。"""
+"""Approvals (ゲスト出庫承認) router — 同じ部署の一般と管理者が PendingTransaction を承認・却下する（I-07）。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, require_admin
+from app.auth import CurrentUser, require_user
 from app.db import get_db
 from app.models import Department, Inventory, Item, PendingTransaction
 from app.schemas.common import OptStr, Page
+from app.services.scope import Scope, resolve, same_department
 from app.services.stock_service import Actor, StockError, process_outbound
 from app.services.workflow import claim, require_reason
 from app.utils.datetime import jst_now
@@ -60,12 +61,16 @@ def _out(row) -> PendingOut:  # noqa: ANN001
 @router.get("", response_model=Page[PendingOut])
 def list_pending(
     status: str | None = "PENDING",
+    scope: Scope | None = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(require_admin),
+    user: CurrentUser = Depends(require_user),
 ) -> Page[PendingOut]:
+    """一般は自分の部署の申請だけ（ほかの部署の申請は承認できないので出さない）。管理者は全部署が既定。"""
     q = _rows(db)
+    if not user.is_admin or resolve(user, scope) == "dept":
+        q = q.filter(PendingTransaction.department_id == user.department_id)
     if status:
         q = q.filter(PendingTransaction.status == status)
     total = q.count()
@@ -75,17 +80,20 @@ def list_pending(
 
 @router.post("/{pid}/decide", response_model=PendingOut)
 def decide(
-    pid: int, body: ApproveRequest, db: Session = Depends(get_db), user: CurrentUser = Depends(require_admin)
+    pid: int, body: ApproveRequest, db: Session = Depends(get_db), user: CurrentUser = Depends(require_user)
 ) -> PendingOut:
     p = db.get(PendingTransaction, pid)
     if not p:
         raise HTTPException(404, "申請が見つかりません")
+    if not same_department(user, p.department_id):
+        raise HTTPException(403, "ほかの部署の申請は承認できません")
     require_reason(body.approve, body.reject_reason)
     claim(db, PendingTransaction, pid, to_status="APPROVED" if body.approve else "REJECTED")
     if body.approve:
         dept = db.get(Department, p.department_id)
         # 履歴の担当者は申請したゲスト、部署はゲストの部署（B-08）
-        actor = Actor(user_id=p.guest_user_id, name=p.actor_name, department=dept.name if dept else None)
+        actor = Actor(user_id=p.guest_user_id, name=p.actor_name, department=dept.name if dept else None,
+                      department_id=p.department_id)
         note = f"ゲスト出庫申請 #{p.id}（承認：{user.display_name}）" + (f" {p.note}" if p.note else "")
         try:
             process_outbound(db, actor, item_id=p.item_id, quantity=p.quantity, note=note, ref=("PT", p.id))

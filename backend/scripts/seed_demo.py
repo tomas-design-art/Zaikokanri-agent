@@ -33,7 +33,7 @@ DEMO_PASSWORD = "pass1234"
 def reset(db):
     print("🔄 既存データをリセット中...")
     for tbl in [
-        "inventory_history", "pending_transactions", "disposal_requests",
+        "inventory_history", "pending_transactions", "disposal_notices", "disposal_requests",
         "purchase_requests", "purchase_candidates",
         "stocktake_records", "stocktake_sessions",
         "inventory", "items", "users",
@@ -197,6 +197,8 @@ def seed(force: bool = False, reset_users: bool = False):
                  "薬品": "本", "IT機器": "台", "廃棄物": "個"}
         locations = {"消耗品": "倉庫A-1", "医療材料": "倉庫A-2", "事務用品": "事務室棚", "洗剤・消毒薬": "倉庫B-1",
                      "備品": "倉庫B-2", "薬品": "薬品庫", "IT機器": "事務室棚", "廃棄物": "倉庫B-3"}
+        # 部署だけで使う物品（I-01）。ほかは全社共通
+        owner_by_code = {"XF01": "放射線科", "CX01": "放射線科", "BC01": "検査科", "CG01": "検査科"}
         created_items = []
         for name, code, vcode, cat, price, qty, thresh in items_data:
             v = vendors[vcode]
@@ -211,6 +213,8 @@ def seed(force: bool = False, reset_users: bool = False):
                     unit=units.get(cat, "個"),
                     location_text=locations.get(cat),
                     reorder_point=thresh,
+                    owner_department_id=depts[owner_by_code[code]].id if code in owner_by_code else None,
+                    is_common=0 if code in owner_by_code else 1,
                     is_active=1,
                 )
                 db.add(it)
@@ -235,6 +239,7 @@ def seed(force: bool = False, reset_users: bool = False):
                 user_name=admin_user.display_name,
                 created_by=admin_user.id,
                 department=admin_user.department,
+                department_id=admin_user.department_id,
                 note="初期在庫投入",
                 status="CONFIRMED",
                 created_at=now - timedelta(days=30 - i),
@@ -248,6 +253,7 @@ def seed(force: bool = False, reset_users: bool = False):
                 user_name=admin_user.display_name,
                 created_by=admin_user.id,
                 department=admin_user.department,
+                department_id=admin_user.department_id,
                 note="通常使用",
                 status="CONFIRMED",
                 created_at=now - timedelta(days=15 - i),

@@ -19,7 +19,9 @@ export interface InventoryRow {
     category: string;
     unit: string;
     vendor_name: string | null;
-    unit_price: number;
+    unit_price: number | null;  // ゲストには出ない
+    owner_department_id: number | null;
+    is_common: boolean;
     quantity: number;
     threshold: number;
     location: string | null;
@@ -37,7 +39,7 @@ export interface InventoryKPI {
     expiring_soon_count: number;
 }
 
-export interface Todo { guest_outbound: number; disposal: number; purchase: number; receivable: number; }
+export interface Todo { guest_outbound: number; disposal: number; purchase: number; receivable: number; disposal_notices: number; }
 
 export interface ItemOut {
     id: number;
@@ -48,7 +50,9 @@ export interface ItemOut {
     category: string;
     unit: string;
     department_tags: string | null;
-    unit_price: number;
+    unit_price: number | null;  // ゲストには出ない
+    owner_department_id: number | null;
+    is_common: number;
     expiry_date: string | null;
     location_text: string | null;
     reorder_point: number | null;
@@ -95,8 +99,21 @@ export interface PROut {
 
 export interface DROut {
     id: number; item_id: number; item_name: string; unit: string;
-    quantity: number; reason: string; requester: string; requester_id: number;
+    quantity: number; reason: string; requester: string; requester_id: number; department: string | null;
     status: string; reject_reason: string | null; created_at: string;
+}
+
+export interface NoticeOut {
+    id: number; item_id: number; item_name: string; unit: string; quantity: number; current_stock: number;
+    reason: string; reporter: string; reporter_id: number; department_id: number; department: string | null;
+    status: string; handled_by: string | null; handled_comment: string | null; disposal_request_id: number | null;
+    created_at: string; handled_at: string | null;
+}
+
+export interface SummaryGroup {
+    item_id: number; item_name: string; unit: string; vendor_name: string | null; current_stock: number; total_qty: number;
+    departments: { department: string; qty: number }[];
+    requests: PROut[];
 }
 
 export interface PendingOut {

@@ -34,6 +34,13 @@ export const REQUEST_STATUS: LabelMap = {
     CANCELLED: { label: "取り下げ", cls: gray },
 };
 
+export const NOTICE_STATUS: LabelMap = {
+    OPEN: { label: "未対応", cls: amber },
+    PROMOTED: { label: "申請済", cls: green },
+    DISMISSED: { label: "対応不要", cls: gray },
+    CANCELLED: { label: "取り下げ", cls: gray },
+};
+
 export const PRIORITY: LabelMap = {
     LOW: { label: "低", cls: gray },
     NORMAL: { label: "通常", cls: gray },

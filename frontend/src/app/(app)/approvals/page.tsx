@@ -7,14 +7,18 @@ import { api, apiPost, errorText } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { fmtDateTime, fmtQty } from "@/lib/format";
 import type { Page, PendingOut } from "@/lib/types";
-import { PageHeader, ReasonDialog, StateRow } from "@/components/ui";
+import { useMe } from "@/lib/use-me";
+import { useScope } from "@/lib/use-scope";
+import { PageHeader, ReasonDialog, ScopeToggle, StateRow } from "@/components/ui";
 
 export default function ApprovalsPage() {
     const qc = useQueryClient();
     const [rejecting, setRejecting] = useState<PendingOut | null>(null);
+    const { isAdmin } = useMe();
+    const { scope } = useScope();
     const { data, isLoading, error } = useQuery({
-        queryKey: ["pending"],
-        queryFn: () => api<Page<PendingOut>>("/approvals", { params: { status: "PENDING", per_page: 200 } }),
+        queryKey: ["pending", scope],
+        queryFn: () => api<Page<PendingOut>>("/approvals", { params: { status: "PENDING", per_page: 200, scope } }),
     });
     const refresh = () => { for (const k of ["pending", "kpi", "todo", "inventory", "history"]) qc.invalidateQueries({ queryKey: [k] }); };
     const decide = useMutation({
@@ -26,7 +30,9 @@ export default function ApprovalsPage() {
 
     return (
         <div className="space-y-4">
-            <PageHeader title="ゲスト出庫の承認" description="承認すると、その時点の在庫から引かれます" />
+            <PageHeader title="ゲスト出庫の承認"
+                description={isAdmin ? "承認すると、その時点の在庫から引かれます" : "あなたの部署のゲストの申請です。承認すると、その時点の在庫から引かれます"}
+                actions={isAdmin ? <ScopeToggle /> : undefined} />
             <div className="card overflow-x-auto">
                 <table className="table-zk">
                     <thead><tr><th>申請日時</th><th>物品</th><th className="text-right">数量</th><th className="text-right">現在庫</th><th>申請者</th><th>部署</th><th>メモ</th><th /></tr></thead>

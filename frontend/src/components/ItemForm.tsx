@@ -3,15 +3,15 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { CategoryOut, ItemOut, VendorOut } from "@/lib/types";
+import type { CategoryOut, DepartmentOut, ItemOut, VendorOut } from "@/lib/types";
 import { countError, Field, parseCount } from "@/components/ui";
 
 export type ItemPayload = Record<string, string | number | null>;
 
 type FormState = {
     item_name: string; item_code: string; category: string; unit: string; vendor_name: string; vendor_item_code: string;
-    unit_price: string; reorder_point: string; location_text: string; expiry_date: string; department_tags: string;
-    is_inventory_target: boolean; initial_quantity: string;
+    unit_price: string; reorder_point: string; location_text: string; expiry_date: string;
+    owner_department_id: string; is_common: boolean; is_inventory_target: boolean; initial_quantity: string;
 };
 
 function initial(item?: ItemOut): FormState {
@@ -26,7 +26,8 @@ function initial(item?: ItemOut): FormState {
         reorder_point: item?.reorder_point == null ? "10" : String(item.reorder_point),
         location_text: item?.location_text ?? "",
         expiry_date: item?.expiry_date ?? "",
-        department_tags: item?.department_tags ?? "",
+        owner_department_id: item?.owner_department_id == null ? "" : String(item.owner_department_id),
+        is_common: item ? item.is_common === 1 : true,
         is_inventory_target: (item?.is_inventory_target ?? 1) === 1,
         initial_quantity: "0",
     };
@@ -40,13 +41,16 @@ export function ItemForm({ item, submitLabel, busy, onSubmit, onCancel }: {
     const [f, setF] = useState<FormState>(() => initial(item));
     const cats = useQuery({ queryKey: ["cats"], queryFn: () => api<CategoryOut[]>("/categories") });
     const vendors = useQuery({ queryKey: ["vendors"], queryFn: () => api<VendorOut[]>("/vendors") });
+    const depts = useQuery({ queryKey: ["depts"], queryFn: () => api<DepartmentOut[]>("/departments") });
     const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }));
 
     const price = Number(f.unit_price);
     const priceErr = f.unit_price.trim() === "" || Number.isNaN(price) || price < 0 ? "単価は0以上の数値で入力してください" : null;
     const reorderErr = f.reorder_point.trim() === "" ? null : countError(f.reorder_point, { label: "発注点" });
     const initErr = isNew ? countError(f.initial_quantity, { label: "初期在庫" }) : null;
-    const invalid = !f.item_name.trim() || !f.category || !f.unit.trim() || !!priceErr || !!reorderErr || !!initErr;
+    // 所属部署か全社共通のどちらかは必ず（I-01）
+    const ownerErr = !f.owner_department_id && !f.is_common ? "所属部署を選ぶか、全社共通にしてください" : null;
+    const invalid = !f.item_name.trim() || !f.category || !f.unit.trim() || !!priceErr || !!reorderErr || !!initErr || !!ownerErr;
 
     function submit(e: React.FormEvent) {
         e.preventDefault();
@@ -55,7 +59,8 @@ export function ItemForm({ item, submitLabel, busy, onSubmit, onCancel }: {
             item_name: f.item_name, item_code: f.item_code, category: f.category, unit: f.unit, vendor_name: f.vendor_name,
             vendor_item_code: f.vendor_item_code, unit_price: price,
             reorder_point: f.reorder_point.trim() === "" ? null : parseCount(f.reorder_point),
-            location_text: f.location_text, expiry_date: f.expiry_date, department_tags: f.department_tags,
+            location_text: f.location_text, expiry_date: f.expiry_date,
+            owner_department_id: f.owner_department_id ? Number(f.owner_department_id) : null, is_common: f.is_common ? 1 : 0,
             is_inventory_target: f.is_inventory_target ? 1 : 0,
         };
         if (isNew) body.initial_quantity = parseCount(f.initial_quantity);
@@ -97,7 +102,19 @@ export function ItemForm({ item, submitLabel, busy, onSubmit, onCancel }: {
             )}
             <Field label="保管場所" hint="棚卸しはこの順に並びます">{(id) => <input id={id} className="input" value={f.location_text} onChange={(e) => set("location_text", e.target.value)} placeholder="例：倉庫A-1" />}</Field>
             <Field label="有効期限">{(id) => <input id={id} type="date" className="input" value={f.expiry_date} onChange={(e) => set("expiry_date", e.target.value)} />}</Field>
-            <Field label="部署タグ（カンマ区切り）" className="sm:col-span-2">{(id) => <input id={id} className="input" value={f.department_tags} onChange={(e) => set("department_tags", e.target.value)} />}</Field>
+            <Field label="所属部署" hint="この部署の人の一覧に最初から出ます" error={ownerErr}>
+                {(id) => (
+                    <select id={id} className="input" value={f.owner_department_id} onChange={(e) => set("owner_department_id", e.target.value)} aria-invalid={!!ownerErr}>
+                        <option value="">なし（全社共通の物品）</option>
+                        {depts.data?.map((d) => <option key={d.id} value={String(d.id)}>{d.name}</option>)}
+                        {f.owner_department_id && !depts.data?.some((d) => String(d.id) === f.owner_department_id) && <option value={f.owner_department_id}>（無効な部署）</option>}
+                    </select>
+                )}
+            </Field>
+            <label className="flex items-center gap-2 self-end pb-2 text-sm">
+                <input type="checkbox" checked={f.is_common} onChange={(e) => set("is_common", e.target.checked)} />
+                全社共通（どの部署の一覧にも出す。文具など）
+            </label>
             <label className="flex items-center gap-2 text-sm sm:col-span-2">
                 <input type="checkbox" checked={f.is_inventory_target} onChange={(e) => set("is_inventory_target", e.target.checked)} />
                 棚卸しの対象にする
