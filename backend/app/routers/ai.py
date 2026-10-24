@@ -1,6 +1,7 @@
 """AI router — natural-language inventory query and order suggestion.
 
 AI が作った SQL の実行可否はコードのルールで判定する（app/services/ai_query.py）。
+AI の画面は一般以上（ゲストは使えない：I-09。AI の SQL は部署の絞り込みを通らないため）。
 """
 from __future__ import annotations
 
@@ -8,11 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, get_current_user
+from app.auth import CurrentUser, require_user
 from app.config import settings
 from app.db import get_db
 from app.models import Inventory, Item
 from app.services.ai_query import is_safe_sql, run_readonly_query
+from app.services.scope import Scope, item_filter
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -37,7 +39,7 @@ def _ai_unavailable() -> QueryResponse:
 def query(
     body: QueryRequest,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(get_current_user),
+    _: CurrentUser = Depends(require_user),
 ) -> QueryResponse:
     if not settings.ai_enabled or not settings.openai_api_key:
         return _ai_unavailable()
@@ -89,15 +91,17 @@ class OrderSuggestion(BaseModel):
 
 @router.get("/order-suggest", response_model=list[OrderSuggestion])
 def order_suggest(
-    db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)
+    scope: Scope | None = None, db: Session = Depends(get_db), user: CurrentUser = Depends(require_user)
 ) -> list[OrderSuggestion]:
-    rows = (
+    query = (
         db.query(Item, Inventory)
         .join(Inventory, Inventory.item_id == Item.id)
         .filter(Item.is_active == 1, Inventory.quantity <= Inventory.threshold)
-        .order_by(Inventory.quantity)
-        .all()
     )
+    visible = item_filter(user, scope)
+    if visible is not None:
+        query = query.filter(visible)
+    rows = query.order_by(Inventory.quantity).all()
     out = []
     for it, inv in rows:
         suggested = max(it.reorder_point or inv.threshold * 2, inv.threshold * 2) - inv.quantity

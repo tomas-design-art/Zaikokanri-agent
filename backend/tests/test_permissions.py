@@ -2,6 +2,8 @@
 
 全部の API を「ログインなし・ゲスト・一般（本人）・一般（他人）・管理者」で呼び、
 表のとおり「できる／403（権限なし）／401（ログインが要る）」になるかを確かめる。
+部署：本人 taro＝検査科、他人 hanako＝看護部、ゲスト＝看護部（hanako と同じ部署）。
+部署で変わる行（承認・廃棄の連絡）は SAME_DEPT＝ゲストと同じ部署の一般と管理者。細かい範囲は test_departments.py。
 API を足したらこの表にも足すこと（足さないと test_R00 が落ちる）。
 """
 from __future__ import annotations
@@ -18,6 +20,7 @@ from app.main import app
 from app.models import (
     Category,
     Department,
+    DisposalNotice,
     DisposalRequest,
     InventoryHistory,
     Item,
@@ -36,6 +39,8 @@ ALL = {"guest", "user", "other", "admin"}
 USERS_UP = {"user", "other", "admin"}
 ADMIN = {"admin"}
 OWNER_OR_ADMIN = {"user", "admin"}
+SAME_DEPT = {"other", "admin"}  # ゲスト（看護部）と同じ部署の一般（hanako）と管理者（I-07 / I-08）
+GUEST_ONLY = {"guest"}
 PUBLIC = "public"  # ログインなしでも呼べる
 
 
@@ -78,18 +83,18 @@ TABLE: list[Row] = [
     Row("R20", "GET", "/stats/top-outbound", ALL),
     Row("R21", "GET", "/stats/by-department", ALL),
     Row("R22", "GET", "/stats/todo", USERS_UP),
-    Row("R23", "GET", "/vendors", ALL),
+    Row("R23", "GET", "/vendors", USERS_UP),
     Row("R24", "GET", "/categories", ALL),
     Row("R25", "GET", "/departments", ALL),
-    Row("R26", "GET", "/purchase-requests", ALL),
-    Row("R27", "GET", "/disposal-requests", ALL),
+    Row("R26", "GET", "/purchase-requests", USERS_UP),
+    Row("R27", "GET", "/disposal-requests", USERS_UP),
     Row("R28", "GET", "/outbound/my-requests", ALL),
-    Row("R29", "GET", "/stocktake/sessions", ALL),
-    Row("R30", "GET", "/stocktake/sessions/{session}", ALL),
-    Row("R31", "GET", "/stocktake/sessions/{session}/records", ALL),
-    Row("R32", "GET", "/stocktake/sessions/{session}/export.xlsx", ALL),
-    Row("R33", "GET", "/ai/order-suggest", ALL),
-    Row("R34", "POST", "/ai/query", ALL, _b({"question": "在庫は？"})),
+    Row("R29", "GET", "/stocktake/sessions", USERS_UP),
+    Row("R30", "GET", "/stocktake/sessions/{session}", USERS_UP),
+    Row("R31", "GET", "/stocktake/sessions/{session}/records", USERS_UP),
+    Row("R32", "GET", "/stocktake/sessions/{session}/export.xlsx", USERS_UP),
+    Row("R33", "GET", "/ai/order-suggest", USERS_UP),
+    Row("R34", "POST", "/ai/query", USERS_UP, _b({"question": "在庫は？"})),
     # ---- 在庫を動かす ----
     Row("R40", "POST", "/outbound", ALL, _b({"item_id": ITEM, "quantity": 1}), note="ゲストは申請になる"),
     Row("R41", "POST", "/outbound/bulk", ALL, _b({"items": lambda c: [{"item_id": c["item"], "quantity": 1}]})),
@@ -104,16 +109,24 @@ TABLE: list[Row] = [
     Row("R53", "DELETE", "/purchase-requests/{pr}", OWNER_OR_ADMIN),
     Row("R54", "GET", "/purchase-candidates", ADMIN),
     Row("R55", "PATCH", "/purchase-candidates/{pr}", ADMIN, _b({"note": "x"})),
-    Row("R56", "POST", "/disposal-requests", ALL, _b({"item_id": ITEM, "quantity": 1, "reason": "破損"})),
+    Row("R56", "POST", "/disposal-requests", USERS_UP, _b({"item_id": ITEM, "quantity": 1, "reason": "破損"})),
     Row("R57", "DELETE", "/disposal-requests/{dr}", OWNER_OR_ADMIN),
     Row("R58", "POST", "/disposal-requests/{dr}/approve", ADMIN, _b({"approve": True})),
-    Row("R59", "GET", "/approvals", ADMIN),
-    Row("R60", "POST", "/approvals/{pending}/decide", ADMIN, _b({"approve": True})),
+    Row("R59", "GET", "/approvals", USERS_UP, note="一般は自分の部署の分だけ"),
+    Row("R60", "POST", "/approvals/{pending}/decide", SAME_DEPT, _b({"approve": True})),
     Row("R61", "POST", "/orders/preview", ADMIN, _b({"request_ids": lambda c: [c["pr"]]})),
     Row("R62", "POST", "/orders/email", ADMIN, _b({"payload": {"vendor": "x", "items": []}})),
     Row("R63", "POST", "/orders/pdf", ADMIN, _b({"payload": {"vendor": "x", "items": []}})),
     Row("R64", "POST", "/orders/excel", ADMIN, _b({"payloads": [{"vendor": "x", "items": []}]})),
     Row("R65", "POST", "/orders/mark-ordered", ADMIN, _b({"request_ids": lambda c: [c["pr"]]})),
+    Row("R66", "GET", "/purchase-requests/summary", ADMIN),
+    Row("R67", "POST", "/purchase-requests/bulk-decide", ADMIN, _b({"ids": lambda c: [c["pr"]], "status": "APPROVED"})),
+    # ---- ゲストの廃棄は部署への連絡（I-08） ----
+    Row("R68", "GET", "/disposal-notices", ALL, note="ゲストは本人の分、一般は自分の部署の分"),
+    Row("R69", "POST", "/disposal-notices", GUEST_ONLY, _b({"item_id": ITEM, "quantity": 1, "reason": "破損"})),
+    Row("R75", "POST", "/disposal-notices/{notice}/promote", SAME_DEPT, _b({})),
+    Row("R76", "POST", "/disposal-notices/{notice}/dismiss", SAME_DEPT, _b({})),
+    Row("R77", "DELETE", "/disposal-notices/{notice}", GUEST_ONLY, note="ゲスト本人だけ"),
     # ---- 棚卸し ----
     Row("R70", "POST", "/stocktake/sessions", ADMIN, _b({"name": "2つ目"})),
     Row("R71", "POST", "/stocktake/sessions/{session}/refresh-items", ADMIN),
@@ -155,13 +168,15 @@ def ctx(db) -> dict:
     hist = InventoryHistory(item_id=item.id, change_type="OUT", quantity=1, user_name="山田太郎", department="検査科",
                             status="CONFIRMED", created_by=by["taro"].id, created_at=now)
     sess = StocktakeSession(name="棚卸し", status="OPEN", created_by=by["admin"].id, created_at=now)
-    db.add_all([pr, dr, pt, hist, sess])
+    notice = DisposalNotice(item_id=item.id, quantity=1, reason="破損", reporter_id=by["guest"].id,
+                            department_id=by["guest"].department_id, status="OPEN", created_at=now)
+    db.add_all([pr, dr, pt, hist, sess, notice])
     db.flush()
     rec = StocktakeRecord(session_id=sess.id, item_id=item.id, system_qty=50, status="PENDING")
     db.add(rec)
     db.commit()
     return {
-        "item": item.id, "pr": pr.id, "dr": dr.id, "pending": pt.id, "history": hist.id, "session": sess.id, "record": rec.id,
+        "item": item.id, "pr": pr.id, "dr": dr.id, "notice": notice.id, "pending": pt.id, "history": hist.id, "session": sess.id, "record": rec.id,
         "vendor": db.query(Vendor).first().id, "category": db.query(Category).filter(Category.name == "薬品").one().id,
         "department": db.query(Department).filter(Department.name == "看護部").one().id, "target_user": by["hanako"].id,
         "users": by,

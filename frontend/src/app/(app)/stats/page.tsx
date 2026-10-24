@@ -5,7 +5,8 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { todayJst } from "@/lib/format";
 import { CHANGE_TYPE } from "@/lib/labels";
-import { Field, PageHeader, StateRow } from "@/components/ui";
+import { useScope } from "@/lib/use-scope";
+import { Field, PageHeader, ScopeToggle, StateRow } from "@/components/ui";
 
 interface Monthly { ym: string; change_type: string; total_quantity: number }
 interface Top { item_id: number; item_name: string; total_quantity: number }
@@ -19,8 +20,9 @@ export default function StatsPage() {
     const [from, setFrom] = useState(() => `${todayJst().slice(0, 8)}01`);
     const [to, setTo] = useState(todayJst());
     const [months, setMonths] = useState(6);
-    const period = { date_from: from, date_to: to };
-    const m = useQuery({ queryKey: ["stats-m", months], queryFn: () => api<Monthly[]>("/stats/monthly", { params: { months } }) });
+    const { scope } = useScope();
+    const period = { date_from: from, date_to: to, scope };
+    const m = useQuery({ queryKey: ["stats-m", months, scope], queryFn: () => api<Monthly[]>("/stats/monthly", { params: { months, scope } }) });
     const t = useQuery({ queryKey: ["stats-t", period], queryFn: () => api<Top[]>("/stats/top-outbound", { params: period }) });
     const d = useQuery({ queryKey: ["stats-d", period], queryFn: () => api<Dept[]>("/stats/by-department", { params: period }) });
 
@@ -31,7 +33,7 @@ export default function StatsPage() {
 
     return (
         <div className="space-y-6">
-            <PageHeader title="統計" description="調整・棚卸し・取り消しは含みません" />
+            <PageHeader title="統計" description="調整・棚卸し・取り消しは含みません。自分の部署＝部署の人の操作と、部署の物品への操作" actions={<ScopeToggle />} />
             <div className="card flex flex-wrap items-end gap-3 p-3">
                 <Field label="開始日" className="w-40">{(id) => <input id={id} type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} />}</Field>
                 <Field label="終了日" className="w-40">{(id) => <input id={id} type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} />}</Field>

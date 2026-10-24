@@ -12,10 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user
 from app.db import get_db
-from app.models import Inventory, Item
+from app.models import Department, Inventory, Item
 from app.schemas.common import Page
 from app.schemas.items import InventoryRow
 from app.services.inventory_view import expiry_window, inventory_query, to_row
+from app.services.scope import Scope, item_filter
 from app.utils.text import csv_safe
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
@@ -30,10 +31,13 @@ class InventoryKPI(BaseModel):
 
 
 @router.get("/kpi", response_model=InventoryKPI)
-def kpi(db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)) -> InventoryKPI:
+def kpi(scope: Scope | None = None, db: Session = Depends(get_db), user: CurrentUser = Depends(get_current_user)) -> InventoryKPI:
     today, soon = expiry_window()
     active = db.query(Item).filter(Item.is_active == 1)
     stock = db.query(Inventory).join(Item, Item.id == Inventory.item_id).filter(Item.is_active == 1)
+    visible = item_filter(user, scope)
+    if visible is not None:
+        active, stock = active.filter(visible), stock.filter(visible)
     with_expiry = active.filter(Item.expiry_date.is_not(None))
     return InventoryKPI(
         total_items=active.count(),
@@ -50,15 +54,18 @@ def list_inventory(
     category: str | None = None,
     department: str | None = None,
     only_low_stock: bool = False,
+    scope: Scope | None = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ) -> Page[InventoryRow]:
-    query = inventory_query(db, q=q, category=category, department=department, only_low_stock=only_low_stock)
+    query = inventory_query(db, q=q, category=category, department=department, only_low_stock=only_low_stock,
+                            visible=item_filter(user, scope))
     total = query.count()
     rows = query.order_by(Item.item_name).offset((page - 1) * per_page).limit(per_page).all()
-    return Page[InventoryRow](items=[to_row(i, inv) for i, inv in rows], total=total, page=page, per_page=per_page)
+    items = [to_row(i, inv, hide_prices=user.is_guest) for i, inv in rows]
+    return Page[InventoryRow](items=items, total=total, page=page, per_page=per_page)
 
 
 @router.get("/export.csv")
@@ -66,21 +73,29 @@ def export_csv(
     q: str | None = None,
     category: str | None = None,
     only_low_stock: bool = False,
+    scope: Scope | None = None,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ) -> StreamingResponse:
-    """在庫一覧の CSV（B-20）。Excel で文字化けしないよう BOM 付き UTF-8。"""
-    rows = inventory_query(db, q=q, category=category, only_low_stock=only_low_stock).order_by(Item.item_name).all()
+    """在庫一覧の CSV（B-20）。Excel で文字化けしないよう BOM 付き UTF-8。ゲストには業者・単価の列を出さない（I-09）。"""
+    rows = inventory_query(db, q=q, category=category, only_low_stock=only_low_stock,
+                           visible=item_filter(user, scope)).order_by(Item.item_name).all()
+    depts = dict(db.query(Department.id, Department.name).all())
+    priced = not user.is_guest
     buf = io.StringIO()
     buf.write("﻿")
     w = csv.writer(buf)
-    w.writerow(["物品名", "物品コード", "カテゴリ", "業者", "保管場所", "在庫数", "単位", "発注点", "単価", "有効期限", "状態"])
+    # 列の順は前と同じ（所属部署は最後に足した）
+    w.writerow(["物品名", "物品コード", "カテゴリ", *(["業者"] if priced else []), "保管場所", "在庫数", "単位", "発注点",
+                *(["単価"] if priced else []), "有効期限", "状態", "所属部署"])
     for item, inv in rows:
         r = to_row(item, inv)
         flags = (("期限切れ", r.is_expired), ("期限間近", r.is_expiring_soon), ("在庫不足", r.is_low_stock))
+        owner = "・".join(x for x in (depts.get(item.owner_department_id), "共通" if item.is_common else None) if x)
         w.writerow([csv_safe(v) for v in [
-            r.item_name, r.item_code or "", r.category, r.vendor_name or "", r.location or "", r.quantity,
-            r.unit, r.threshold, r.unit_price, r.expiry_date or "", "・".join(s for s, on in flags if on),
+            r.item_name, r.item_code or "", r.category, *([r.vendor_name or ""] if priced else []), r.location or "",
+            r.quantity, r.unit, r.threshold, *([r.unit_price] if priced else []), r.expiry_date or "",
+            "・".join(s for s, on in flags if on), owner,
         ]])
     return StreamingResponse(
         iter([buf.getvalue()]),

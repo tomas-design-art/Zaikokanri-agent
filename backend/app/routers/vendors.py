@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, get_current_user, require_admin
+from app.auth import CurrentUser, get_current_user, require_admin, require_user
 from app.db import get_db
 from app.models import Category, Department, Item, User, Vendor
 from app.schemas.common import OptStr, ReqStr
@@ -46,7 +46,7 @@ class VendorUpdate(BaseModel):
 def list_vendors(
     include_inactive: bool = False,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(get_current_user),
+    _: CurrentUser = Depends(require_user),  # ゲストには業者を出さない（I-09）
 ) -> list[VendorOut]:
     q = db.query(Vendor)
     if not include_inactive:

@@ -14,8 +14,10 @@ import { cn } from "@/lib/cn";
 import { labelOf, ROLE } from "@/lib/labels";
 import type { Role, Todo } from "@/lib/types";
 import { hasRole, useMeQuery } from "@/lib/use-me";
+import { resetScope } from "@/lib/use-scope";
 
-interface NavItem { href: string; label: string; icon: LucideIcon; role?: Role; todo?: keyof Todo }
+/** todo：メニューに出す処理待ちの件数（管理者と一般で、自分が処理する分だけ） */
+interface NavItem { href: string; label: string; icon: LucideIcon; role?: Role; todo?: { admin?: (keyof Todo)[]; user?: (keyof Todo)[] } }
 interface NavGroup { title: string; items: NavItem[] }
 
 const NAV: NavGroup[] = [
@@ -25,7 +27,7 @@ const NAV: NavGroup[] = [
             { href: "/dashboard", label: "ダッシュボード", icon: LayoutDashboard },
             { href: "/inventory", label: "在庫一覧", icon: Package },
             { href: "/outbound", label: "出庫", icon: ArrowUpFromLine },
-            { href: "/inbound", label: "入庫", icon: ArrowDownToLine, role: "USER", todo: "receivable" },
+            { href: "/inbound", label: "入庫", icon: ArrowDownToLine, role: "USER", todo: { admin: ["receivable"] } },
             { href: "/history", label: "履歴", icon: HistoryIcon },
             { href: "/alerts", label: "アラート", icon: TriangleAlert },
         ],
@@ -33,9 +35,10 @@ const NAV: NavGroup[] = [
     {
         title: "申請・承認",
         items: [
-            { href: "/purchase-requests", label: "発注申請", icon: ShoppingCart, role: "USER", todo: "purchase" },
-            { href: "/approvals", label: "出庫承認", icon: SquareCheck, role: "ADMIN", todo: "guest_outbound" },
-            { href: "/disposal", label: "廃棄申請", icon: Trash2, todo: "disposal" },
+            { href: "/purchase-requests", label: "発注申請", icon: ShoppingCart, role: "USER", todo: { admin: ["purchase"] } },
+            // 一般は同じ部署のゲストの出庫を承認する（I-07）
+            { href: "/approvals", label: "出庫承認", icon: SquareCheck, role: "USER", todo: { admin: ["guest_outbound"], user: ["guest_outbound"] } },
+            { href: "/disposal", label: "廃棄申請", icon: Trash2, todo: { admin: ["disposal", "disposal_notices"], user: ["disposal_notices"] } },
         ],
     },
     {
@@ -52,7 +55,7 @@ const NAV: NavGroup[] = [
     {
         title: "その他",
         items: [
-            { href: "/ai", label: "AIアシスタント", icon: Sparkles },
+            { href: "/ai", label: "AIアシスタント", icon: Sparkles, role: "USER" },
             { href: "/account/password", label: "パスワード変更", icon: KeyRound },
         ],
     },
@@ -79,6 +82,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     async function logout() {
         try { await apiPost("/auth/logout"); } catch { /* ignore */ }
         qc.clear();
+        resetScope();
         router.replace("/login");
     }
 
@@ -110,7 +114,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                         {items.map((n) => {
                             const Icon = n.icon;
                             const active = pathname === n.href || pathname.startsWith(n.href + "/");
-                            const count = n.todo && user.role === "ADMIN" ? todo.data?.[n.todo] ?? 0 : 0;
+                            const keys = (user.role === "ADMIN" ? n.todo?.admin : user.role === "USER" ? n.todo?.user : undefined) ?? [];
+                            const count = keys.reduce((sum, k) => sum + (todo.data?.[k] ?? 0), 0);
                             return (
                                 <Link key={n.href} href={n.href} onClick={() => setOpen(false)}
                                     aria-current={active ? "page" : undefined}

@@ -9,6 +9,7 @@ from app.auth import CurrentUser, get_current_user
 from app.db import get_db
 from app.models import Inventory, Item, PendingTransaction
 from app.schemas.stock import OutboundBulkCreate, OutboundCreate, StockResultOut
+from app.services.scope import require_visible_to_guest
 from app.services.stock_service import StockError, actor_of, check_outbound, lock_inventory, process_outbound
 from app.utils.datetime import jst_now
 
@@ -19,6 +20,7 @@ def _request_as_guest(db: Session, user: CurrentUser, line: OutboundCreate) -> S
     """ゲストの出庫は申請として登録する。在庫と上限は申請の時点でも確かめる（B-08）。"""
     if user.department_id is None:
         raise StockError("部署が設定されていないため申請できません。管理者に部署の設定を依頼してください")
+    require_visible_to_guest(user, db.get(Item, line.item_id))  # ほかの部署だけの物品は 403（I-04）
     item, inv = lock_inventory(db, line.item_id)
     check_outbound(item, inv, line.quantity)
     pt = PendingTransaction(

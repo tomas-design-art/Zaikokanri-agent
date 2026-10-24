@@ -4,7 +4,8 @@ on:
   push:
     branches: [main, staging, develop]
   pull_request:
-    branches: [main, staging, develop]
+    # feature/** は、まだ Merge していない PR のブランチをベースにした PR（続きの PR）でも CI を回すため
+    branches: [main, staging, develop, "feature/**"]
 
 # 方針（開発憲章 5章）：lint・型・テスト・E2E の失敗、脆弱性・秘密情報の検出は止める。
 # 監査ツールそのものの不調（ネットワーク等）だけは止めない。

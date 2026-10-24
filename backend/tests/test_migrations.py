@@ -103,6 +103,45 @@ def test_B01_A03_data_migration(fresh_url):
     eng.dispose()
 
 
+def test_I02_I06_department_data_migration(fresh_url):
+    """0004：既存の物品は共通（所属部署がある物はそのまま）・過去の履歴と申請に部署IDが入る。"""
+    cfg = _cfg(fresh_url)
+    command.upgrade(cfg, "0003_overhaul")
+    eng = create_engine(fresh_url)
+    with eng.begin() as conn:
+        dept = conn.execute(text("SELECT id FROM departments WHERE name='総務部'")).scalar_one()
+        admin = conn.execute(text("SELECT id FROM users WHERE username='admin'")).scalar_one()
+        conn.execute(text("INSERT INTO items (item_name, category, is_active, is_common) VALUES ('共通になる', '消耗品', 1, 0)"))
+        conn.execute(text(
+            "INSERT INTO items (item_name, category, is_active, owner_department_id, is_common) VALUES ('部署の物', '消耗品', 1, :d, 0)"
+        ), {"d": dept})
+        item = conn.execute(text("SELECT id FROM items WHERE item_name='共通になる'")).scalar_one()
+        conn.execute(text(
+            "INSERT INTO inventory_history (item_id, change_type, quantity, user_name, department, status) "
+            "VALUES (:i, 'OUT', 1, '管理者', '総務部', 'CONFIRMED'), (:i, 'OUT', 1, '退職者', '昔の部署', 'CONFIRMED')"
+        ), {"i": item})
+        conn.execute(text(
+            "INSERT INTO purchase_requests (item_id, requested_qty, requested_by_user_id, requested_by_department, status, received_qty) "
+            "VALUES (:i, 1, :u, '総務部', 'PENDING', 0), (:i, 2, :u, '昔の部署', 'PENDING', 0)"
+        ), {"i": item, "u": admin})
+        conn.execute(text(
+            "INSERT INTO disposal_requests (item_id, quantity, reason, requester_id, status) VALUES (:i, 1, '破損', :u, 'PENDING')"
+        ), {"i": item, "u": admin})
+    eng.dispose()
+
+    command.upgrade(cfg, "head")
+    eng = create_engine(fresh_url)
+    with eng.connect() as conn:
+        commons = dict(conn.execute(text("SELECT item_name, is_common FROM items WHERE item_name IN ('共通になる', '部署の物')")).all())
+        assert commons == {"共通になる": 1, "部署の物": 0}
+        hist = dict(conn.execute(text("SELECT user_name, department_id FROM inventory_history")).all())
+        assert hist == {"管理者": dept, "退職者": None}
+        # 発注は申請時の部署名、無ければ申請者の今の部署
+        assert [r[0] for r in conn.execute(text("SELECT department_id FROM purchase_requests ORDER BY requested_qty"))] == [dept, dept]
+        assert conn.execute(text("SELECT department_id FROM disposal_requests")).scalar_one() == dept
+    eng.dispose()
+
+
 def test_F03_app_boots_on_migrated_db(fresh_url, monkeypatch):
     """マイグレーション済み DB に対してアプリを起動し、初期管理者でログインできる。"""
     from fastapi.testclient import TestClient

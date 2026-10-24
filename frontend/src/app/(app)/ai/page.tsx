@@ -4,7 +4,8 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, apiPost, errorText } from "@/lib/api";
-import { Field, PageHeader, StateRow } from "@/components/ui";
+import { useScope } from "@/lib/use-scope";
+import { Field, PageHeader, ScopeToggle, StateRow } from "@/components/ui";
 
 interface QueryResp { answer: string; sql: string | null; rows: Record<string, unknown>[] | null }
 interface Suggest { item_id: number; item_name: string; current_quantity: number; threshold: number; suggested_qty: number; reason: string }
@@ -15,11 +16,12 @@ export default function AiPage() {
         mutationFn: () => apiPost<QueryResp>("/ai/query", { question: q }),
         onError: (e) => toast.error(errorText(e)),
     });
-    const sugg = useQuery({ queryKey: ["ai-sugg"], queryFn: () => api<Suggest[]>("/ai/order-suggest") });
+    const { scope } = useScope();
+    const sugg = useQuery({ queryKey: ["ai-sugg", scope], queryFn: () => api<Suggest[]>("/ai/order-suggest", { params: { scope } }) });
 
     return (
         <div className="space-y-6">
-            <PageHeader title="AIアシスタント" description="質問から読み取り専用の検索を作って実行します（物品・在庫・履歴・部署・カテゴリ・業者だけが対象、最大200件）" />
+            <PageHeader title="AIアシスタント" description="質問から読み取り専用の検索を作って実行します（物品・在庫・履歴・部署・カテゴリ・業者だけが対象、最大200件。AI の質問は部署の絞り込みを通らず、全部署が対象）" actions={<ScopeToggle />} />
             <section className="card space-y-3 p-4" aria-label="自然言語で検索">
                 <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); ask.mutate(); }}>
                     <Field label="質問" className="min-w-64 flex-1">{(id) => <input id={id} className="input" placeholder="例：期限切れの物品を全部教えて" value={q} onChange={(e) => setQ(e.target.value)} maxLength={500} />}</Field>

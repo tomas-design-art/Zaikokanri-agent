@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, get_current_user, require_admin, require_user
+from app.auth import CurrentUser, require_admin, require_user
 from app.db import get_db
 from app.models import StocktakeSession, User
 from app.schemas.common import OptDate, OptStr, ReqStr
@@ -113,7 +113,7 @@ def _get_session(db: Session, sid: int) -> StocktakeSession:
 
 # ---------- Sessions ----------
 @router.get("/sessions", response_model=list[SessionOut])
-def list_sessions(db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)) -> list[SessionOut]:
+def list_sessions(db: Session = Depends(get_db), _: CurrentUser = Depends(require_user)) -> list[SessionOut]:
     rows = db.query(StocktakeSession).order_by(StocktakeSession.id.desc()).limit(100).all()
     return [_session_out(db, s) for s in rows]
 
@@ -129,7 +129,7 @@ def create_session(body: SessionCreate, db: Session = Depends(get_db), user: Cur
 
 
 @router.get("/sessions/{sid}", response_model=SessionOut)
-def get_session(sid: int, db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)) -> SessionOut:
+def get_session(sid: int, db: Session = Depends(get_db), _: CurrentUser = Depends(require_user)) -> SessionOut:
     return _session_out(db, _get_session(db, sid))
 
 
@@ -162,7 +162,7 @@ def list_records(
     q: str | None = None,
     only: Literal["uncounted", "diff"] | None = None,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(get_current_user),
+    _: CurrentUser = Depends(require_user),  # ゲストは使えない（全部署の物品と数が載る：I-13）
 ) -> list[RecordOut]:
     _get_session(db, sid)
     return [_record_out(r) for r in svc.list_records(db, sid, q=q, only=only)]
@@ -176,7 +176,7 @@ def update_record(rid: int, body: RecordUpdate, db: Session = Depends(get_db), u
 
 
 @router.get("/sessions/{sid}/export.xlsx")
-def export_session_excel(sid: int, db: Session = Depends(get_db), _: CurrentUser = Depends(get_current_user)) -> StreamingResponse:
+def export_session_excel(sid: int, db: Session = Depends(get_db), _: CurrentUser = Depends(require_user)) -> StreamingResponse:
     sess = _get_session(db, sid)
     rows = [_record_out(r) for r in svc.list_records(db, sid)]
     summary = svc.summarize(db, sid)

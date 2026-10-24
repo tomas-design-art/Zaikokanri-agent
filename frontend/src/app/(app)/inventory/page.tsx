@@ -10,18 +10,21 @@ import { fmtQty } from "@/lib/format";
 import type { CategoryOut, InventoryRow, Page } from "@/lib/types";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { useMe } from "@/lib/use-me";
-import { Field, PageHeader, Pager, StateRow } from "@/components/ui";
+import { useScope } from "@/lib/use-scope";
+import { Field, ownerLabel, PageHeader, Pager, ScopeToggle, StateRow, useDepartmentNames } from "@/components/ui";
 
 const PER_PAGE = 100;
 
 export default function InventoryPage() {
-    const { isAdmin } = useMe();
+    const { isAdmin, isGuest } = useMe();
+    const { scope } = useScope();
+    const deptNames = useDepartmentNames();
     const [q, setQ] = useState("");
     const [category, setCategory] = useState("");
     const [onlyLow, setOnlyLow] = useState(false);
     const [page, setPage] = useState(1);
     const qDeb = useDebouncedValue(q, 300);
-    const params = { q: qDeb, category, only_low_stock: onlyLow };
+    const params = { q: qDeb, category, only_low_stock: onlyLow, scope };
 
     const cats = useQuery({ queryKey: ["cats"], queryFn: () => api<CategoryOut[]>("/categories") });
     const { data, isLoading, error } = useQuery({
@@ -55,25 +58,27 @@ export default function InventoryPage() {
                     <input type="checkbox" checked={onlyLow} onChange={(e) => { setOnlyLow(e.target.checked); setPage(1); }} />
                     在庫不足のみ
                 </label>
+                <ScopeToggle className="mb-1" />
                 <span className="ml-auto pb-2 text-sm text-slate-500" aria-live="polite">{data ? `${data.total} 件` : ""}</span>
             </div>
             <div className="card overflow-x-auto">
                 <table className="table-zk">
                     <thead>
                         <tr>
-                            <th>物品名</th><th>コード</th><th>カテゴリ</th><th>保管場所</th><th>業者</th>
+                            <th>物品名</th><th>コード</th><th>カテゴリ</th><th>所属</th><th>保管場所</th>{!isGuest && <th>業者</th>}
                             <th className="text-right">在庫</th><th className="text-right">発注点</th><th>有効期限</th><th>状態</th>{isAdmin && <th />}
                         </tr>
                     </thead>
                     <tbody>
-                        <StateRow colSpan={isAdmin ? 10 : 9} loading={isLoading} error={error} empty={data?.items.length === 0} />
+                        <StateRow colSpan={9 + (isGuest ? 0 : 1) + (isAdmin ? 1 : 0)} loading={isLoading} error={error} empty={data?.items.length === 0} />
                         {data?.items.map((r) => (
                             <tr key={r.item_id}>
                                 <td className="font-medium">{r.item_name}</td>
                                 <td className="text-slate-500">{r.item_code || "-"}</td>
                                 <td>{r.category}</td>
+                                <td className="text-slate-600">{ownerLabel(deptNames, r.owner_department_id, r.is_common)}</td>
                                 <td className="text-slate-600">{r.location || "-"}</td>
-                                <td className="text-slate-600">{r.vendor_name || "-"}</td>
+                                {!isGuest && <td className="text-slate-600">{r.vendor_name || "-"}</td>}
                                 <td className={cn("text-right font-medium tabular-nums", r.is_low_stock && "text-amber-600")}>{fmtQty(r.quantity, r.unit)}</td>
                                 <td className="text-right text-slate-500 tabular-nums">{r.threshold}</td>
                                 <td>{r.expiry_date || "-"}</td>

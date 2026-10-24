@@ -8,7 +8,8 @@ import { api, apiDelete, apiPatch, errorText } from "@/lib/api";
 import { fmtYen } from "@/lib/format";
 import type { ItemOut, Page } from "@/lib/types";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
-import { ConfirmDialog, Field, PageHeader, Pager, StateRow } from "@/components/ui";
+import { useScope } from "@/lib/use-scope";
+import { ConfirmDialog, Field, ownerLabel, PageHeader, Pager, ScopeToggle, StateRow, useDepartmentNames } from "@/components/ui";
 
 const PER_PAGE = 50;
 
@@ -19,10 +20,12 @@ export default function ItemsPage() {
     const [showInactive, setShowInactive] = useState(false);
     const [target, setTarget] = useState<ItemOut | null>(null);
     const qDeb = useDebouncedValue(q, 300);
+    const { scope } = useScope();
+    const deptNames = useDepartmentNames();
 
     const list = useQuery({
-        queryKey: ["items", qDeb, page, showInactive],
-        queryFn: () => api<Page<ItemOut>>("/items", { params: { q: qDeb, page, per_page: PER_PAGE, include_inactive: showInactive } }),
+        queryKey: ["items", qDeb, page, showInactive, scope],
+        queryFn: () => api<Page<ItemOut>>("/items", { params: { q: qDeb, page, per_page: PER_PAGE, include_inactive: showInactive, scope } }),
     });
     const refresh = () => { for (const k of ["items", "inventory", "kpi"]) qc.invalidateQueries({ queryKey: [k] }); };
     const deact = useMutation({
@@ -42,17 +45,19 @@ export default function ItemsPage() {
             <div className="card flex flex-wrap items-end gap-3 p-3">
                 <Field label="検索" className="w-full sm:w-80">{(id) => <input id={id} className="input" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} placeholder="物品名 / コード / 業者" />}</Field>
                 <label className="flex items-center gap-1 pb-2 text-sm"><input type="checkbox" checked={showInactive} onChange={(e) => { setShowInactive(e.target.checked); setPage(1); }} />無効な物品も表示</label>
+                <ScopeToggle className="mb-1" />
             </div>
             <div className="card overflow-x-auto">
                 <table className="table-zk">
-                    <thead><tr><th>物品名</th><th>コード</th><th>カテゴリ</th><th>単位</th><th>業者</th><th className="text-right">単価</th><th>状態</th><th /></tr></thead>
+                    <thead><tr><th>物品名</th><th>コード</th><th>カテゴリ</th><th>所属</th><th>単位</th><th>業者</th><th className="text-right">単価</th><th>状態</th><th /></tr></thead>
                     <tbody>
-                        <StateRow colSpan={8} loading={list.isLoading} error={list.error} empty={list.data?.items.length === 0} />
+                        <StateRow colSpan={9} loading={list.isLoading} error={list.error} empty={list.data?.items.length === 0} />
                         {list.data?.items.map((i) => (
                             <tr key={i.id} className={i.is_active ? "" : "text-slate-400"}>
                                 <td className="font-medium">{i.item_name}</td>
                                 <td>{i.item_code || "-"}</td>
                                 <td>{i.category}</td>
+                                <td>{ownerLabel(deptNames, i.owner_department_id, i.is_common)}</td>
                                 <td>{i.unit}</td>
                                 <td>{i.vendor_name || "-"}</td>
                                 <td className="text-right tabular-nums">{fmtYen(i.unit_price)}</td>

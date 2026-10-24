@@ -103,6 +103,7 @@ for module in (
 ):
     app.include_router(module.router)
 app.include_router(purchase_requests.candidates_router)
+app.include_router(disposal_requests.notices_router)
 app.include_router(vendors.vendors_router)
 app.include_router(vendors.categories_router)
 app.include_router(vendors.departments_router)
