@@ -119,7 +119,7 @@ def test_C09_todo_counts_for_admin(guest_client, user_client, admin_client, item
     user_client.post("/disposal-requests", json={"item_id": item_id, "quantity": 1, "reason": "破損"})
     _pr(user_client, item_id)
     todo = admin_client.get("/stats/todo").json()
-    assert todo == {"guest_outbound": 1, "disposal": 1, "purchase": 1, "receivable": 0}
+    assert todo == {"guest_outbound": 1, "disposal": 1, "purchase": 1, "receivable": 0, "disposal_notices": 0}
 
 
 def test_order_render_flow_still_works(user_client, admin_client, item_id):

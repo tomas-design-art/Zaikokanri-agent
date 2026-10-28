@@ -17,6 +17,7 @@ from app.db import get_db
 from app.models import InventoryHistory, Item
 from app.schemas.common import Page
 from app.schemas.stock import StockResultOut
+from app.services.scope import Scope, history_filter
 from app.services.stock_service import StockError, actor_of, process_undo, undo_problem
 from app.utils.datetime import day_range
 from app.utils.text import contains, csv_safe
@@ -52,10 +53,14 @@ class HistoryFilter(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
     mine: bool = False
+    scope: Scope | None = None
 
 
 def _base_query(db: Session, f: HistoryFilter, user: CurrentUser) -> SAQuery:
     query = db.query(InventoryHistory, Item.item_name, Item.unit).join(Item, Item.id == InventoryHistory.item_id)
+    visible = history_filter(user, f.scope)  # 自分の部署の人の操作＋自分の部署の物品への操作（I-05）
+    if visible is not None:
+        query = query.filter(visible)
     if f.q and f.q.strip():
         query = query.filter(or_(contains(Item.item_name, f.q.strip()), contains(InventoryHistory.user_name, f.q.strip())))
     if f.change_type:
@@ -89,11 +94,13 @@ def list_history(
         .all()
     )
     can_undo_role = user.has_role("USER")
+    priced = not user.is_guest  # ゲストには単価・業者を出さない（I-09）
     items = [
         HistoryRow(
             id=h.id, item_id=h.item_id, item_name=name, unit=unit or "個", change_type=h.change_type,
             quantity=h.quantity, user_name=h.user_name, department=h.department, status=h.status, note=h.note,
-            vendor_name=h.vendor_name, unit_price=h.unit_price, total_price=h.total_price,
+            vendor_name=h.vendor_name if priced else None, unit_price=h.unit_price if priced else None,
+            total_price=h.total_price if priced else None,
             created_at=h.created_at.isoformat(timespec="seconds") if h.created_at else "",
             can_undo=can_undo_role and undo_problem(h, user_id=user.id, is_admin=user.is_admin) is None,
         )
@@ -129,16 +136,18 @@ def export_csv(
     user: CurrentUser = Depends(get_current_user),
 ) -> StreamingResponse:
     rows = _base_query(db, f, user).order_by(InventoryHistory.created_at.desc()).all()
+    priced = not user.is_guest  # ゲストには業者・単価・合計の列を出さない（I-09）
     buf = io.StringIO()
     buf.write("﻿")  # Excel で文字化けしないように
     w = csv.writer(buf)
-    w.writerow(["日時", "物品名", "区分", "数量", "単位", "担当者", "部署", "状態", "備考", "業者", "単価", "合計"])
+    w.writerow(["日時", "物品名", "区分", "数量", "単位", "担当者", "部署", "状態", "備考", *(["業者", "単価", "合計"] if priced else [])])
     for h, name, unit in rows:
+        prices = [h.vendor_name or "", h.unit_price if h.unit_price is not None else "",
+                  h.total_price if h.total_price is not None else ""] if priced else []
         w.writerow([csv_safe(v) for v in [
             h.created_at.isoformat(sep=" ", timespec="seconds") if h.created_at else "",
             name, CHANGE_TYPE_LABELS.get(h.change_type, h.change_type), h.quantity, unit or "個", h.user_name,
-            h.department or "", STATUS_LABELS.get(h.status, h.status), h.note or "", h.vendor_name or "",
-            h.unit_price if h.unit_price is not None else "", h.total_price if h.total_price is not None else "",
+            h.department or "", STATUS_LABELS.get(h.status, h.status), h.note or "", *prices,
         ]])
     return StreamingResponse(
         iter([buf.getvalue()]),

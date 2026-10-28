@@ -6,9 +6,10 @@ import { toast } from "sonner";
 import { api, apiDelete, apiPatch, apiPost, downloadFile, errorText } from "@/lib/api";
 import { fmtDateTime, fmtQty, fmtYen } from "@/lib/format";
 import { PRIORITY, REQUEST_STATUS } from "@/lib/labels";
-import type { InventoryRow, OrderPayload, Page, PROut } from "@/lib/types";
+import type { InventoryRow, OrderPayload, Page, PROut, SummaryGroup } from "@/lib/types";
 import { useMe } from "@/lib/use-me";
-import { Badge, ConfirmDialog, countError, Field, ItemPicker, Modal, PageHeader, parseCount, ReasonDialog, StateRow } from "@/components/ui";
+import { useScope } from "@/lib/use-scope";
+import { Badge, ConfirmDialog, countError, Field, ItemPicker, Modal, PageHeader, parseCount, ReasonDialog, ScopeToggle, StateRow, Tabs } from "@/components/ui";
 
 const ORDERABLE = new Set(["APPROVED", "ORDERED"]);
 const OPEN = new Set(["PENDING", "ON_HOLD"]);
@@ -114,9 +115,84 @@ function OrderPreview({ payloads, approvedIds, onClose, onOrdered }: {
     );
 }
 
+/** 管理者：同じ物品の申請のまとめ（I-11）。まとめて承認して発注書を作るか、一部の部署の分を却下する。 */
+function Summary({ onChanged, onPreview }: { onChanged: () => void; onPreview: (payloads: OrderPayload[], ids: number[]) => void }) {
+    const [selected, setSelected] = useState<Set<number>>(new Set());
+    const [rejecting, setRejecting] = useState(false);
+    const groups = useQuery({ queryKey: ["pr", "summary"], queryFn: () => api<SummaryGroup[]>("/purchase-requests/summary") });
+    const ids = [...selected];
+    const toggle = (id: number) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+    const decide = useMutation({
+        mutationFn: async ({ status, comment, order }: { status: "APPROVED" | "REJECTED"; comment?: string; order?: boolean }) => {
+            await apiPost("/purchase-requests/bulk-decide", { ids, status, admin_comment: comment || null });
+            return order ? (await apiPost<{ payloads: OrderPayload[] }>("/orders/preview", { request_ids: ids })).payloads : null;
+        },
+        onSuccess: (payloads, v) => {
+            toast.success(v.status === "APPROVED" ? `${ids.length}件を承認しました` : `${ids.length}件を却下しました`);
+            setRejecting(false);
+            setSelected(new Set());
+            onChanged();
+            if (payloads) onPreview(payloads, ids);
+        },
+        onError: (e) => { toast.error(errorText(e)); onChanged(); },
+    });
+    return (
+        <div className="space-y-3">
+            <div className="card flex flex-wrap items-center gap-2 p-3">
+                <span className="text-sm text-slate-600">承認前の申請を物品ごとにまとめています。{selected.size}件を選択</span>
+                <div className="ml-auto flex flex-wrap gap-2">
+                    <button className="btn-primary" disabled={!ids.length || decide.isPending} onClick={() => decide.mutate({ status: "APPROVED", order: true })}>承認して発注書を作成</button>
+                    <button className="btn-secondary" disabled={!ids.length || decide.isPending} onClick={() => decide.mutate({ status: "APPROVED" })}>承認だけ</button>
+                    <button className="btn-danger" disabled={!ids.length || decide.isPending} onClick={() => setRejecting(true)}>却下</button>
+                </div>
+            </div>
+            {groups.isLoading && <p className="text-slate-500">読み込み中...</p>}
+            {groups.data?.length === 0 && <p className="card p-4 text-slate-500">承認前の申請はありません</p>}
+            {groups.data?.map((g) => {
+                const all = g.requests.every((r) => selected.has(r.id));
+                return (
+                    <section key={g.item_id} className="card space-y-2 p-3" aria-label={`${g.item_name}のまとめ`}>
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <div>
+                                <b>{g.item_name}</b> <span className="text-xs text-slate-500">{g.vendor_name || "業者未設定"}・今の在庫 {fmtQty(g.current_stock, g.unit)}</span>
+                            </div>
+                            <div className="text-sm">合計 <b className="tabular-nums">{fmtQty(g.total_qty, g.unit)}</b>（{g.departments.map((d) => `${d.department} ${d.qty}`).join("・")}）</div>
+                        </div>
+                        <table className="table-zk">
+                            <thead><tr>
+                                <th className="w-10"><input type="checkbox" aria-label={`${g.item_name}の申請をすべて選ぶ`} checked={all}
+                                    onChange={() => setSelected((s) => { const n = new Set(s); for (const r of g.requests) if (all) n.delete(r.id); else n.add(r.id); return n; })} /></th>
+                                <th>部署</th><th>申請者</th><th className="text-right">数量</th><th>優先度</th><th>希望納期</th><th>備考</th>
+                            </tr></thead>
+                            <tbody>
+                                {g.requests.map((r) => (
+                                    <tr key={r.id}>
+                                        <td><input type="checkbox" aria-label={`${r.requested_by_department || ""} ${r.requested_by} の申請を選ぶ`} checked={selected.has(r.id)} onChange={() => toggle(r.id)} /></td>
+                                        <td>{r.requested_by_department || "-"}</td>
+                                        <td>{r.requested_by}</td>
+                                        <td className="text-right tabular-nums">{fmtQty(r.requested_qty, r.unit)}</td>
+                                        <td><Badge map={PRIORITY} value={r.priority} /></td>
+                                        <td className="text-xs">{r.due_date || "-"}</td>
+                                        <td className="text-xs text-slate-500">{r.note || ""}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </section>
+                );
+            })}
+            <ReasonDialog open={rejecting} title={`${ids.length}件の申請を却下`} label="却下の理由（申請者に表示されます）" confirmText="却下する" danger busy={decide.isPending}
+                onClose={() => setRejecting(false)} onSubmit={(comment) => decide.mutate({ status: "REJECTED", comment })} />
+        </div>
+    );
+}
+
 export default function PurchaseRequestsPage() {
     const qc = useQueryClient();
     const { me, isAdmin } = useMe();
+    const { scope } = useScope();
+    const [tab, setTab] = useState<"list" | "summary">("list");
+    const [previewIds, setPreviewIds] = useState<number[] | null>(null);
     const [status, setStatus] = useState("");
     const [mine, setMine] = useState(false);
     const [open, setOpen] = useState(false);
@@ -126,8 +202,8 @@ export default function PurchaseRequestsPage() {
     const [withdrawing, setWithdrawing] = useState<PROut | null>(null);
 
     const list = useQuery({
-        queryKey: ["pr", status, mine],
-        queryFn: () => api<Page<PROut>>("/purchase-requests", { params: { status, mine, per_page: 200 } }),
+        queryKey: ["pr", status, mine, scope],
+        queryFn: () => api<Page<PROut>>("/purchase-requests", { params: { status, mine, scope, per_page: 200 } }),
     });
     const rows = list.data?.items ?? [];
     const refresh = () => { for (const k of ["pr", "todo", "receivable"]) qc.invalidateQueries({ queryKey: [k] }); };
@@ -149,12 +225,16 @@ export default function PurchaseRequestsPage() {
         onError: (e) => toast.error(errorText(e)),
     });
     const toggle = (id: number) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
-    const approvedSelected = rows.filter((r) => selected.has(r.id) && r.status === "APPROVED").map((r) => r.id);
+    const approvedSelected = previewIds ?? rows.filter((r) => selected.has(r.id) && r.status === "APPROVED").map((r) => r.id);
 
     return (
         <div className="space-y-4">
             <PageHeader title="発注申請" actions={<button className="btn-primary" onClick={() => setOpen((v) => !v)}>{open ? "申請フォームを閉じる" : "＋ 新規申請"}</button>} />
             {open && <NewRequest onDone={() => { setOpen(false); refresh(); }} />}
+            {isAdmin && <Tabs tabs={[{ value: "list", label: "申請の一覧" }, { value: "summary", label: "同じ物品のまとめ" }]} value={tab} onChange={setTab} />}
+            {isAdmin && tab === "summary" ? (
+                <Summary onChanged={refresh} onPreview={(payloads, ids) => { setPreviewIds(ids); setPreview(payloads); }} />
+            ) : <>
             <div className="card flex flex-wrap items-end gap-3 p-3">
                 <Field label="状態" className="w-40">
                     {(id) => <select id={id} className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
@@ -163,6 +243,7 @@ export default function PurchaseRequestsPage() {
                     </select>}
                 </Field>
                 <label className="flex items-center gap-1 pb-2 text-sm"><input type="checkbox" checked={mine} onChange={(e) => setMine(e.target.checked)} />自分の申請のみ</label>
+                <ScopeToggle className="mb-1" />
                 {isAdmin && (
                     <div className="ml-auto flex items-center gap-2 pb-1">
                         <span className="text-sm text-slate-600">発注書：{selected.size}件を選択</span>
@@ -172,9 +253,9 @@ export default function PurchaseRequestsPage() {
             </div>
             <div className="card overflow-x-auto">
                 <table className="table-zk">
-                    <thead><tr>{isAdmin && <th className="w-10" />}<th>申請日時</th><th>物品</th><th className="text-right">数量</th><th>優先度</th><th>希望納期</th><th>申請者</th><th>状態</th><th>コメント</th><th /></tr></thead>
+                    <thead><tr>{isAdmin && <th className="w-10" />}<th>申請日時</th><th>物品</th><th className="text-right">数量</th><th>優先度</th><th>希望納期</th><th>申請者</th><th>部署</th><th>状態</th><th>コメント</th><th /></tr></thead>
                     <tbody>
-                        <StateRow colSpan={isAdmin ? 10 : 9} loading={list.isLoading} error={list.error} empty={rows.length === 0} emptyText="申請はありません" />
+                        <StateRow colSpan={isAdmin ? 11 : 10} loading={list.isLoading} error={list.error} empty={rows.length === 0} emptyText="申請はありません" />
                         {rows.map((p) => (
                             <tr key={p.id}>
                                 {isAdmin && <td>{ORDERABLE.has(p.status) && <input type="checkbox" aria-label={`${p.item_name}を発注書に含める`} checked={selected.has(p.id)} onChange={() => toggle(p.id)} />}</td>}
@@ -187,6 +268,7 @@ export default function PurchaseRequestsPage() {
                                 <td><Badge map={PRIORITY} value={p.priority} /></td>
                                 <td className="text-xs">{p.due_date || "-"}</td>
                                 <td>{p.requested_by}</td>
+                                <td>{p.requested_by_department || "-"}</td>
                                 <td><Badge map={REQUEST_STATUS} value={p.status} /></td>
                                 <td className="text-xs text-slate-500">{p.admin_comment || ""}</td>
                                 <td className="space-x-3 whitespace-nowrap">
@@ -204,8 +286,9 @@ export default function PurchaseRequestsPage() {
                     </tbody>
                 </table>
             </div>
-            {preview && <OrderPreview payloads={preview} approvedIds={approvedSelected} onClose={() => setPreview(null)}
-                onOrdered={() => { setPreview(null); setSelected(new Set()); refresh(); }} />}
+            </>}
+            {preview && <OrderPreview payloads={preview} approvedIds={approvedSelected} onClose={() => { setPreview(null); setPreviewIds(null); }}
+                onOrdered={() => { setPreview(null); setPreviewIds(null); setSelected(new Set()); refresh(); }} />}
             <ReasonDialog open={!!rejecting} title="発注申請を却下" label="却下の理由（申請者に表示されます）" confirmText="却下する" danger busy={decide.isPending}
                 onClose={() => setRejecting(null)} onSubmit={(comment) => rejecting && decide.mutate({ id: rejecting.id, status: "REJECTED", comment })} />
             <ConfirmDialog open={!!withdrawing} title="申請を取り下げる" confirmText="取り下げる" danger busy={withdraw.isPending}

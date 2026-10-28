@@ -9,7 +9,8 @@ test.describe("P-01 / P-02 画面で出庫すると全部の画面に反映さ�
     test("在庫一覧・ダッシュボード・アラート・履歴・統計", async ({ page }) => {
         const admin = await apiAs("admin");
         const item = await createItem(admin, { name: uniq("反映E2E"), qty: 12, reorder: 5, unit: "箱" });
-        const before = await (await admin.get("/api/inventory/kpi")).json();
+        // ダッシュボードはこの人（一般＝自分の部署＋共通）の範囲で数える（I-03）
+        const before = await (await (await apiAs("user")).get("/api/inventory/kpi")).json();
 
         // 出庫 8 箱（12 → 4、発注点5を下回る）
         await page.goto("/outbound");
@@ -63,7 +64,7 @@ const FORBIDDEN = "この画面を使う権限がありません";
 test.describe("R 権限のない画面は URL で直接開いても使えない", () => {
     test.describe("ゲスト", () => {
         test.use({ storageState: authFile("guest") });
-        for (const path of ["/inbound", "/purchase-requests", "/stocktake", "/items", "/items/new", "/users", "/approvals", "/masters", "/maintenance"]) {
+        for (const path of ["/inbound", "/purchase-requests", "/stocktake", "/items", "/items/new", "/users", "/approvals", "/masters", "/maintenance", "/ai"]) {
             test(path, async ({ page }) => {
                 await page.goto(path);
                 await expect(page.getByRole("alert").filter({ hasText: FORBIDDEN })).toBeVisible();
@@ -72,14 +73,15 @@ test.describe("R 権限のない画面は URL で直接開いても使えない"
     });
     test.describe("一般ユーザー", () => {
         test.use({ storageState: authFile("user") });
-        for (const path of ["/items", "/items/new", "/users", "/approvals", "/masters", "/maintenance"]) {
+        for (const path of ["/items", "/items/new", "/users", "/masters", "/maintenance"]) {
             test(path, async ({ page }) => {
                 await page.goto(path);
                 await expect(page.getByRole("alert").filter({ hasText: FORBIDDEN })).toBeVisible();
             });
         }
         test("使える画面には出ない", async ({ page }) => {
-            for (const path of ["/inbound", "/stocktake", "/purchase-requests"]) {
+            // 出庫承認は同じ部署のゲストの分を承認する（I-07）
+            for (const path of ["/inbound", "/stocktake", "/purchase-requests", "/approvals", "/ai"]) {
                 await page.goto(path);
                 await expect(page.getByText(FORBIDDEN)).toHaveCount(0);
             }

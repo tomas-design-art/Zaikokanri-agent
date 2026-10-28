@@ -11,7 +11,15 @@ from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user, require_user
 from app.db import get_db
-from app.models import DisposalRequest, InventoryHistory, Item, PendingTransaction, PurchaseRequest
+from app.models import (
+    DisposalNotice,
+    DisposalRequest,
+    InventoryHistory,
+    Item,
+    PendingTransaction,
+    PurchaseRequest,
+)
+from app.services.scope import Scope, history_filter
 from app.utils.datetime import day_range, jst_today, month_start
 
 router = APIRouter(prefix="/stats", tags=["stats"])
@@ -20,11 +28,13 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 USAGE_TYPES = ("IN", "OUT", "DISPOSE")
 
 
-def _usage(query: SAQuery) -> SAQuery:
-    return query.filter(
+def _usage(query: SAQuery, user: CurrentUser, scope: Scope | None) -> SAQuery:
+    query = query.filter(
         InventoryHistory.status == "CONFIRMED",
         or_(InventoryHistory.ref_type.is_(None), InventoryHistory.ref_type != "UNDO"),
     )
+    visible = history_filter(user, scope)  # 履歴と同じ「自分の部署」（I-05）
+    return query if visible is None else query.filter(visible)
 
 
 def _period(query: SAQuery, date_from: date | None, date_to: date | None) -> SAQuery:
@@ -44,14 +54,15 @@ class MonthlyRow(BaseModel):
 @router.get("/monthly", response_model=list[MonthlyRow])
 def monthly(
     months: int = Query(12, ge=1, le=36),
+    scope: Scope | None = None,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ) -> list[MonthlyRow]:
     start, _end = day_range(month_start(jst_today(), months - 1), None)
     # "YYYY-MM-DD HH:MM:SS" の先頭7文字＝年月（SQLite / PostgreSQL 共通）
     ym = func.substr(cast(InventoryHistory.created_at, String), 1, 7).label("ym")
     rows = (
-        _usage(db.query(ym, InventoryHistory.change_type, func.sum(InventoryHistory.quantity)))
+        _usage(db.query(ym, InventoryHistory.change_type, func.sum(InventoryHistory.quantity)), user, scope)
         .filter(InventoryHistory.change_type.in_(USAGE_TYPES), InventoryHistory.created_at >= start)
         .group_by(ym, InventoryHistory.change_type)
         .order_by(ym)
@@ -71,12 +82,13 @@ def top_outbound(
     limit: int = Query(10, ge=1, le=50),
     date_from: date | None = None,
     date_to: date | None = None,
+    scope: Scope | None = None,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ) -> list[TopRow]:
     """出庫の多い物品。期間の既定は当月（JST）。"""
     total = func.sum(InventoryHistory.quantity)
-    query = _usage(db.query(Item.id, Item.item_name, total).join(Item, Item.id == InventoryHistory.item_id))
+    query = _usage(db.query(Item.id, Item.item_name, total).join(Item, Item.id == InventoryHistory.item_id), user, scope)
     rows = (
         _period(query.filter(InventoryHistory.change_type == "OUT"), date_from, date_to)
         .group_by(Item.id, Item.item_name)
@@ -96,12 +108,13 @@ class DeptRow(BaseModel):
 def by_department(
     date_from: date | None = None,
     date_to: date | None = None,
+    scope: Scope | None = None,
     db: Session = Depends(get_db),
-    _: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ) -> list[DeptRow]:
     total = func.sum(InventoryHistory.quantity)
     rows = (
-        _period(_usage(db.query(InventoryHistory.department, total)).filter(InventoryHistory.change_type == "OUT"), date_from, date_to)
+        _period(_usage(db.query(InventoryHistory.department, total), user, scope).filter(InventoryHistory.change_type == "OUT"), date_from, date_to)
         .group_by(InventoryHistory.department)
         .order_by(total.desc())
         .all()
@@ -114,16 +127,19 @@ class TodoOut(BaseModel):
     disposal: int
     purchase: int
     receivable: int
+    disposal_notices: int = 0
 
 
 @router.get("/todo", response_model=TodoOut)
 def todo(db: Session = Depends(get_db), user: CurrentUser = Depends(require_user)) -> TodoOut:
-    """処理待ちの件数（C-09）。管理者は全員分、それ以外は自分の申請分。"""
+    """処理待ちの件数（C-09）。管理者は全員分、一般は自分の申請分＋自分の部署の出庫承認（I-07）。
+    部署への連絡（I-08）は、管理者も一般も自分の部署の未対応の分。"""
     pt = db.query(PendingTransaction).filter(PendingTransaction.status == "PENDING")
     dr = db.query(DisposalRequest).filter(DisposalRequest.status == "PENDING")
     pr = db.query(PurchaseRequest).filter(PurchaseRequest.deleted_at.is_(None))
+    notices = db.query(DisposalNotice).filter(DisposalNotice.status == "OPEN", DisposalNotice.department_id == user.department_id)
     if not user.is_admin:
-        pt = pt.filter(PendingTransaction.guest_user_id == user.id)
+        pt = pt.filter(PendingTransaction.department_id == user.department_id)
         dr = dr.filter(DisposalRequest.requester_id == user.id)
         pr = pr.filter(PurchaseRequest.requested_by_user_id == user.id)
     return TodoOut(
@@ -131,4 +147,5 @@ def todo(db: Session = Depends(get_db), user: CurrentUser = Depends(require_user
         disposal=dr.count(),
         purchase=pr.filter(PurchaseRequest.status == "PENDING").count(),
         receivable=pr.filter(PurchaseRequest.status.in_(("APPROVED", "ORDERED"))).count(),
+        disposal_notices=notices.count(),
     )

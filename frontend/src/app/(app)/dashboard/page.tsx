@@ -6,7 +6,8 @@ import { ArrowDownToLine, ArrowUpFromLine, ClipboardList, History, ShoppingCart,
 import { api } from "@/lib/api";
 import type { InventoryKPI, Todo } from "@/lib/types";
 import { useMe } from "@/lib/use-me";
-import { PageHeader } from "@/components/ui";
+import { useScope } from "@/lib/use-scope";
+import { PageHeader, ScopeToggle } from "@/components/ui";
 
 function KpiCard({ label, value, color, href }: { label: string; value: number | string; color: string; href: string }) {
     return (
@@ -19,7 +20,8 @@ function KpiCard({ label, value, color, href }: { label: string; value: number |
 
 export default function DashboardPage() {
     const { me, can, isAdmin, isGuest } = useMe();
-    const kpi = useQuery({ queryKey: ["kpi"], queryFn: () => api<InventoryKPI>("/inventory/kpi") });
+    const { scope } = useScope();
+    const kpi = useQuery({ queryKey: ["kpi", scope], queryFn: () => api<InventoryKPI>("/inventory/kpi", { params: { scope } }) });
     const todo = useQuery({ queryKey: ["todo"], queryFn: () => api<Todo>("/stats/todo"), enabled: can("USER") });
     const k = kpi.data;
     const t = todo.data;
@@ -28,14 +30,14 @@ export default function DashboardPage() {
         { href: "/outbound", label: isGuest ? "出庫を申請する" : "出庫する", icon: ArrowUpFromLine, show: true },
         { href: "/inbound", label: "入庫する", icon: ArrowDownToLine, show: can("USER") },
         { href: "/purchase-requests", label: "発注を申請する", icon: ShoppingCart, show: can("USER") },
-        { href: "/disposal", label: "廃棄を申請する", icon: Trash2, show: true },
+        { href: "/disposal", label: isGuest ? "廃棄が要りそうな物を連絡する" : "廃棄を申請する", icon: Trash2, show: true },
         { href: "/stocktake", label: "棚卸し", icon: ClipboardList, show: can("USER") },
         { href: "/history", label: "履歴を見る", icon: History, show: true },
     ].filter((q) => q.show);
 
     return (
         <div className="space-y-6">
-            <PageHeader title="ダッシュボード" description={me ? `${me.display_name} さん、おつかれさまです` : undefined} />
+            <PageHeader title="ダッシュボード" description={me ? `${me.display_name} さん、おつかれさまです` : undefined} actions={<ScopeToggle />} />
             {kpi.error ? (
                 <p className="text-rose-600">{(kpi.error as Error).message}</p>
             ) : !k ? (
@@ -52,9 +54,10 @@ export default function DashboardPage() {
 
             {t && (
                 <section aria-label="処理待ち" className="card p-4">
-                    <h2 className="mb-2 font-semibold">{isAdmin ? "処理待ち（全員分）" : "あなたの申請"}</h2>
-                    <ul className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                        {isAdmin && <li><Link className="btn-link" href="/approvals">ゲスト出庫の承認待ち：<b>{t.guest_outbound}</b> 件</Link></li>}
+                    <h2 className="mb-2 font-semibold">{isAdmin ? "処理待ち（全員分）" : "処理待ち（あなたの申請と、あなたの部署の分）"}</h2>
+                    <ul className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                        <li><Link className="btn-link" href="/approvals">ゲスト出庫の承認待ち{isAdmin ? "" : "（部署）"}：<b>{t.guest_outbound}</b> 件</Link></li>
+                        <li><Link className="btn-link" href="/disposal">ゲストからの廃棄の連絡（部署）：<b>{t.disposal_notices}</b> 件</Link></li>
                         <li><Link className="btn-link" href="/disposal">廃棄申請の承認待ち：<b>{t.disposal}</b> 件</Link></li>
                         <li><Link className="btn-link" href="/purchase-requests">発注申請の承認待ち：<b>{t.purchase}</b> 件</Link></li>
                         <li><Link className="btn-link" href="/inbound?tab=receive">届くのを待っている発注：<b>{t.receivable}</b> 件</Link></li>

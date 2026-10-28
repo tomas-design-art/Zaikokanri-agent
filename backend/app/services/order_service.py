@@ -50,24 +50,40 @@ def build_payloads(db: Session, request_ids: list[int]) -> list[dict[str, Any]]:
     ).all()
 
     vendor_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_item: dict[int, dict[str, Any]] = {}
     for pr, item, user in rows:
+        dept = pr.requested_by_department or ""
+        line = by_item.get(item.id)
+        if line is not None:
+            # 同じ物品は1行にまとめ、数量は合計、部署別の数は備考に（I-12）
+            line["quantity"] += pr.requested_qty
+            line["_n"] += 1
+            line["_depts"][dept or "(部署なし)"] = line["_depts"].get(dept or "(部署なし)", 0) + pr.requested_qty
+            if pr.note:
+                line["_notes"].append(pr.note)
+            continue
         vendor = item.vendor_name or "不明業者"
-        unit_price = float(item.unit_price) if item.unit_price else None
-        subtotal = unit_price * pr.requested_qty if unit_price else None
-        vendor_groups[vendor].append(
-            {
-                "request_id": pr.id,
-                "item_name": item.item_name or "品目名不明",
-                "item_code": item.item_code or "",
-                "vendor_part_no": item.vendor_item_code or "",
-                "quantity": pr.requested_qty,
-                "unit_price": unit_price,
-                "subtotal": subtotal,
-                "notes": pr.note or "",
-                "department": pr.requested_by_department or "",
-                "requester_name": user.display_name if user else "",
-            }
-        )
+        line = by_item[item.id] = {
+            "request_id": pr.id,
+            "item_name": item.item_name or "品目名不明",
+            "item_code": item.item_code or "",
+            "vendor_part_no": item.vendor_item_code or "",
+            "quantity": pr.requested_qty,
+            "unit_price": float(item.unit_price) if item.unit_price else None,
+            "department": dept,
+            "requester_name": user.display_name if user else "",
+            "_depts": {dept or "(部署なし)": pr.requested_qty},
+            "_notes": [pr.note] if pr.note else [],
+            "_n": 1,
+        }
+        vendor_groups[vendor].append(line)
+    for line in by_item.values():
+        line["subtotal"] = line["unit_price"] * line["quantity"] if line["unit_price"] else None
+        parts = line.pop("_notes")
+        depts = line.pop("_depts")
+        if line.pop("_n") > 1:
+            parts = ["部署別：" + "・".join(f"{k} {v}" for k, v in depts.items()), *parts]
+        line["notes"] = " / ".join(parts)
 
     ordered_at = jst_today().isoformat()
     payloads: list[dict[str, Any]] = []

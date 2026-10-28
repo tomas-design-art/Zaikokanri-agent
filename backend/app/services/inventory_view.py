@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import or_
+from sqlalchemy import ColumnElement, or_
 from sqlalchemy.orm import Query, Session
 
 from app.models import Inventory, Item
@@ -20,7 +20,8 @@ def expiry_window(days: int = EXPIRING_DAYS) -> tuple[str, str]:
     return today.isoformat(), (today + timedelta(days=days)).isoformat()
 
 
-def to_row(item: Item, inv: Inventory, *, days: int = EXPIRING_DAYS) -> InventoryRow:
+def to_row(item: Item, inv: Inventory, *, days: int = EXPIRING_DAYS, hide_prices: bool = False) -> InventoryRow:
+    """hide_prices：ゲストには単価・業者を出さない（I-09）。"""
     today, soon = expiry_window(days)
     expired = bool(item.expiry_date and item.expiry_date < today)
     return InventoryRow(
@@ -29,8 +30,10 @@ def to_row(item: Item, inv: Inventory, *, days: int = EXPIRING_DAYS) -> Inventor
         item_code=item.item_code,
         category=item.category,
         unit=item.unit or "個",
-        vendor_name=item.vendor_name,
-        unit_price=item.unit_price or 0.0,
+        vendor_name=None if hide_prices else item.vendor_name,
+        unit_price=None if hide_prices else item.unit_price or 0.0,
+        owner_department_id=item.owner_department_id,
+        is_common=bool(item.is_common),
         quantity=inv.quantity,
         threshold=inv.threshold,
         location=item.location_text or inv.location,  # B-03：保管場所は物品側を正とする
@@ -62,8 +65,12 @@ def inventory_query(
     category: str | None = None,
     department: str | None = None,
     only_low_stock: bool = False,
+    visible: ColumnElement[bool] | None = None,
 ) -> Query:
+    """visible：部署の見える範囲（app/services/scope.py の item_filter）。"""
     query = db.query(Item, Inventory).join(Inventory, Inventory.item_id == Item.id).filter(Item.is_active == 1)
+    if visible is not None:
+        query = query.filter(visible)
     query = search_items(query, q)
     if category:
         query = query.filter(Item.category == category)

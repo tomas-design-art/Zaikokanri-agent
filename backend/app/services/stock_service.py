@@ -26,6 +26,7 @@ class Actor:
     user_id: int | None
     name: str
     department: str | None
+    department_id: int | None = None
 
 
 @dataclass
@@ -86,6 +87,7 @@ def _record(
         quantity=history_qty,
         user_name=actor.name,
         department=actor.department,
+        department_id=actor.department_id,
         status="CONFIRMED",
         note=note,
         vendor_name=vendor_name,
@@ -204,4 +206,4 @@ def process_undo(db: Session, actor: Actor, h: InventoryHistory) -> StockResult:
 
 
 def actor_of(user) -> Actor:  # noqa: ANN001 (CurrentUser)
-    return Actor(user_id=user.id, name=user.display_name, department=user.department)
+    return Actor(user_id=user.id, name=user.display_name, department=user.department, department_id=user.department_id)

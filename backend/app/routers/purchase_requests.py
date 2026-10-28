@@ -14,8 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user, require_admin, require_user
 from app.db import get_db
-from app.models import Item, PurchaseCandidate, PurchaseRequest, User
+from app.models import Department, Inventory, Item, PurchaseCandidate, PurchaseRequest, User
 from app.schemas.common import OptDate, OptStr, Page
+from app.services.scope import Scope, request_filter
 from app.utils.datetime import jst_now
 
 router = APIRouter(prefix="/purchase-requests", tags=["purchase-requests"])
@@ -25,6 +26,8 @@ DecisionStatus = Literal["PENDING", "ON_HOLD", "APPROVED", "REJECTED"]
 EDITABLE_BY_REQUESTER = {"PENDING", "ON_HOLD"}
 DECIDABLE = {"PENDING", "ON_HOLD", "APPROVED"}
 RECEIVABLE = ("APPROVED", "ORDERED")
+BEFORE_APPROVAL = ("PENDING", "ON_HOLD")
+ALREADY_DECIDED = "ほかの人が先にこの申請を処理しました。画面を更新してください"
 
 
 class PRCreate(BaseModel):
@@ -101,12 +104,17 @@ def list_pr(
     status: str | None = None,
     mine: bool = False,
     receivable: bool = False,
+    scope: Scope | None = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_user),
 ) -> Page[PROut]:
+    """一般の既定は自分の部署の申請＋自分の申請、切り替えで全部署（I-10）。ゲストは使えない（業者が載るため：I-09）。"""
     query = _rows(db)
+    cond = request_filter(user, scope, PurchaseRequest.department_id, PurchaseRequest.requested_by_user_id)
+    if cond is not None:
+        query = query.filter(cond)
     if status:
         query = query.filter(PurchaseRequest.status == status)
     if receivable:
@@ -125,7 +133,7 @@ def _create(db: Session, user: CurrentUser, body: PRCreate) -> PurchaseRequest:
     pr = PurchaseRequest(
         item_id=body.item_id, requested_qty=body.requested_qty, priority=body.priority, due_date=body.due_date,
         note=body.note, requested_by_user_id=user.id, requested_by_department=user.department,
-        status="PENDING", received_qty=0, created_at=jst_now(),
+        department_id=user.department_id, status="PENDING", received_qty=0, created_at=jst_now(),
     )
     db.add(pr)
     db.flush()
@@ -143,6 +151,75 @@ def create_pr(body: PRCreate, db: Session = Depends(get_db), user: CurrentUser =
 def bulk_create_pr(body: PRBulkCreate, db: Session = Depends(get_db), user: CurrentUser = Depends(require_user)) -> list[PROut]:
     """アラートの在庫不足からまとめて申請する（C-08）。"""
     ids = [_create(db, user, line).id for line in body.items]
+    db.commit()
+    return [_one(db, i) for i in ids]
+
+
+class SummaryDept(BaseModel):
+    department: str
+    qty: int
+
+
+class SummaryGroup(BaseModel):
+    item_id: int
+    item_name: str
+    unit: str
+    vendor_name: str | None
+    current_stock: int
+    total_qty: int
+    departments: list[SummaryDept]
+    requests: list[PROut]
+
+
+@router.get("/summary", response_model=list[SummaryGroup])
+def summary(db: Session = Depends(get_db), _: CurrentUser = Depends(require_admin)) -> list[SummaryGroup]:
+    """同じ物品の申請のまとめ（I-11）：承認前の申請を物品ごとに、合計・部署別の内訳・今の在庫。"""
+    rows = _rows(db).filter(PurchaseRequest.status.in_(BEFORE_APPROVAL)).order_by(PurchaseRequest.created_at, PurchaseRequest.id).all()
+    stock = dict(db.query(Inventory.item_id, Inventory.quantity).filter(Inventory.item_id.in_({r[1].id for r in rows})).all())
+    depts = dict(db.query(Department.id, Department.name).all())
+    groups: dict[int, SummaryGroup] = {}
+    by_dept: dict[int, dict[str, int]] = {}
+    for row in rows:
+        pr, item, _who = row
+        g = groups.get(item.id)
+        if g is None:
+            g = groups[item.id] = SummaryGroup(
+                item_id=item.id, item_name=item.item_name, unit=item.unit or "個", vendor_name=item.vendor_name,
+                current_stock=stock.get(item.id, 0), total_qty=0, departments=[], requests=[],
+            )
+            by_dept[item.id] = {}
+        g.total_qty += pr.requested_qty
+        g.requests.append(_out(row))
+        name = depts.get(pr.department_id) or pr.requested_by_department or "(未設定)"
+        by_dept[item.id][name] = by_dept[item.id].get(name, 0) + pr.requested_qty
+    for item_id, g in groups.items():
+        g.departments = [SummaryDept(department=k, qty=v) for k, v in by_dept[item_id].items()]
+    # 部署が多い（まとめる意味がある）物品から
+    return sorted(groups.values(), key=lambda g: (-len(g.departments), -len(g.requests), g.item_name))
+
+
+class BulkDecide(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=200)
+    status: Literal["APPROVED", "REJECTED"]
+    admin_comment: OptStr = Field(default=None, max_length=512)
+
+
+@router.post("/bulk-decide", response_model=list[PROut])
+def bulk_decide(body: BulkDecide, db: Session = Depends(get_db), user: CurrentUser = Depends(require_admin)) -> list[PROut]:
+    """選んだ申請をまとめて承認・却下する（I-11）。1件でも処理済み・見つからなければ全部取りやめ（409）。"""
+    ids = sorted(set(body.ids))
+    values = {"status": body.status, "approved_by": user.id, "approved_at": jst_now(), "updated_at": jst_now()}
+    if body.admin_comment:
+        values["admin_comment"] = body.admin_comment
+    res = db.execute(
+        update(PurchaseRequest)
+        .where(PurchaseRequest.id.in_(ids), PurchaseRequest.status.in_(BEFORE_APPROVAL), PurchaseRequest.deleted_at.is_(None))
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    if res.rowcount != len(ids):
+        db.rollback()
+        raise HTTPException(409, ALREADY_DECIDED)
     db.commit()
     return [_one(db, i) for i in ids]
 
@@ -176,7 +253,7 @@ def update_pr(pr_id: int, body: PRUpdate, db: Session = Depends(get_db), user: C
         )
         if res.rowcount != 1:
             db.rollback()
-            raise HTTPException(409, "ほかの人が先にこの申請を処理しました。画面を更新してください")
+            raise HTTPException(409, ALREADY_DECIDED)
     db.commit()
     return _one(db, pr_id)
 

@@ -102,8 +102,9 @@ class Item(Base):
     frequency_tag: Mapped[str | None] = mapped_column(String(32))
     expiry_date: Mapped[str | None] = mapped_column(String(32))
     is_active: Mapped[int] = mapped_column(Integer, default=1)
+    # 所属部署と全社共通（I-01）。どちらか一方は必ずある。所属部署が無い物品は共通
     owner_department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id"))
-    is_common: Mapped[int] = mapped_column(Integer, default=0)
+    is_common: Mapped[int] = mapped_column(Integer, default=1)
     location_text: Mapped[str | None] = mapped_column(String(128))
     last_inspection_date: Mapped[str | None] = mapped_column(String(32))
     next_inspection_date: Mapped[str | None] = mapped_column(String(32))
@@ -142,6 +143,8 @@ class InventoryHistory(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     user_name: Mapped[str] = mapped_column(String(64), nullable=False)
     department: Mapped[str | None] = mapped_column(String(64))
+    # 操作した人の部署。部署名を変えても絞り込みが外れないように ID でも持つ（I-06）
+    department_id: Mapped[int | None] = mapped_column(Integer, index=True)
     status: Mapped[str] = mapped_column(String(16), default="CONFIRMED")
     note: Mapped[str | None] = mapped_column(Text)
     vendor_name: Mapped[str | None] = mapped_column(String(128))
@@ -186,10 +189,36 @@ class DisposalRequest(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     requester_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    department_id: Mapped[int | None] = mapped_column(Integer, index=True)  # 申請した部署（I-06）
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
     approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime)
     reject_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_jst_now)
+
+
+class DisposalNotice(Base):
+    """ゲストから同じ部署の一般への「これ廃棄が要りそう」の連絡（I-08）。
+
+    状態：OPEN(未対応) → PROMOTED(正式な廃棄申請に上げた) / DISMISSED(対応不要) / CANCELLED(ゲストが取り下げ)
+    """
+
+    __tablename__ = "disposal_notices"
+    __table_args__ = (
+        Index("idx_notice_status", "status"),
+        Index("idx_notice_department", "department_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    reporter_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    department_id: Mapped[int] = mapped_column(ForeignKey("departments.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="OPEN")
+    handled_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime)
+    handled_comment: Mapped[str | None] = mapped_column(Text)
+    disposal_request_id: Mapped[int | None] = mapped_column(ForeignKey("disposal_requests.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_jst_now)
 
 
@@ -208,6 +237,7 @@ class PurchaseRequest(Base):
     note: Mapped[str | None] = mapped_column(Text)
     requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     requested_by_department: Mapped[str | None] = mapped_column(String(64))
+    department_id: Mapped[int | None] = mapped_column(Integer, index=True)  # 申請した部署（I-06）
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
     admin_comment: Mapped[str | None] = mapped_column(Text)
     approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))

@@ -31,7 +31,7 @@ class ItemCreate(ItemFields):
     unit: ReqStr = Field(default="個", max_length=16)
     unit_price: float = Field(default=0.0, ge=0, le=100_000_000, allow_inf_nan=False)
     is_asset: Literal[0, 1] = 0
-    is_common: Literal[0, 1] = 0
+    is_common: Literal[0, 1] | None = None  # 指定なし：所属部署が無ければ共通（I-01）
     is_inventory_target: Literal[0, 1] = 1
     initial_quantity: int = Field(default=0, ge=0, le=1_000_000)
 
@@ -57,7 +57,7 @@ class ItemOut(BaseModel):
     category: str
     unit: str = "個"
     department_tags: str | None = None
-    unit_price: float = 0.0
+    unit_price: float | None = 0.0  # ゲストには出さない（None）
     is_asset: int = 0
     frequency_tag: str | None = None
     expiry_date: str | None = None
@@ -84,7 +84,9 @@ class InventoryRow(BaseModel):
     category: str
     unit: str = "個"
     vendor_name: str | None = None
-    unit_price: float = 0.0
+    unit_price: float | None = 0.0  # ゲストには出さない（None）
+    owner_department_id: int | None = None
+    is_common: bool = True
     quantity: int
     threshold: int
     location: str | None = None
